@@ -1,0 +1,177 @@
+name: 🚀 Kernel Builder (FIXED KSU 4.9)
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_source:
+        description: '🔗 Kernel Source URL'
+        required: true
+        type: string
+      kernel_branch:
+        description: '🌿 Kernel Source Branch'
+        required: true
+        type: string
+      defconfig:
+        description: '⚙️ Kernel Defconfig'
+        required: true
+        type: string
+      ksu_next:
+        description: '🛡️ KernelSU'
+        required: true
+        type: choice
+        options: ['yes', 'no']
+        default: 'no'
+      kbuild_user:
+        description: '👤 KBuild User'
+        required: true
+        type: string
+      device_codename:
+        description: '📱 Device Codename'
+        required: true
+        type: string
+      kernel_name:
+        description: '🏷️ Kernel Name'
+        required: true
+        type: string
+      use_anykernel:
+        description: '📦 Use AnyKernel3'
+        required: true
+        type: choice
+        options: ['yes', 'no']
+        default: 'yes'
+      anykernel_source:
+        description: '📦 AnyKernel Source URL'
+        required: false
+        type: string
+      anykernel_branch:
+        description: '🌿 AnyKernel Branch'
+        required: false
+        type: string
+      timezone:
+        description: '🌍 Timezone'
+        required: false
+        type: string
+        default: 'Asia/Jakarta'
+
+env:
+  TZ: ${{ github.event.inputs.timezone }}
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: 📅 Date
+        run: |
+          echo "DATE=$(date +'%d%m%Y')" >> $GITHUB_ENV
+          echo "FULL_DATE=$(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
+
+      - name: 🧰 Install deps
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y bc bison build-essential flex git curl \
+          libssl-dev libelf-dev libncurses5-dev libncursesw5-dev \
+          device-tree-compiler llvm clang lld zip
+
+      - name: 📥 Clone Kernel
+        run: |
+          git clone --depth=1 -b ${{ github.event.inputs.kernel_branch }} \
+          ${{ github.event.inputs.kernel_source }} kernel
+
+      - name: 🛡️ KernelSU Patch (FIXED for 4.9)
+        if: github.event.inputs.ksu_next == 'yes'
+        run: |
+          cd kernel
+
+          echo "🛡️ Applying KernelSU..."
+
+          git clone --depth=1 https://github.com/tiann/KernelsU.git kernelsu
+
+          if [ -f kernelsu/kernel/setup.sh ]; then
+            bash kernelsu/kernel/setup.sh
+          elif [ -f kernelsu/setup.sh ]; then
+            bash kernelsu/setup.sh
+          else
+            echo "❌ KernelSU setup not found"
+            exit 1
+          fi
+
+          echo "✅ KernelSU applied"
+
+      - name: 🔧 Toolchain
+        run: |
+          mkdir -p toolchain
+          cd toolchain
+
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git
+
+          echo "CLANG_PATH=$(pwd)/proton-clang" >> $GITHUB_ENV
+
+      - name: ⚙️ Env setup
+        run: |
+          cd kernel
+
+          if [ -d arch/arm64 ]; then
+            echo "ARCH=arm64" >> $GITHUB_ENV
+          else
+            echo "ARCH=arm" >> $GITHUB_ENV
+          fi
+
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+          echo "CROSS_COMPILE_ARM32=arm-linux-gnueabihf-" >> $GITHUB_ENV
+          echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
+
+      - name: 🧹 Clean
+        run: |
+          cd kernel
+          make clean || true
+          make mrproper || true
+          rm -rf out
+
+      - name: ⚙️ Defconfig
+        run: |
+          cd kernel
+
+          export PATH=$CLANG_PATH/bin:$PATH
+
+          make O=out ${{ github.event.inputs.defconfig }}
+
+      - name: 🔨 Build Kernel
+        run: |
+          cd kernel
+
+          export PATH=$CLANG_PATH/bin:$PATH
+
+          make -j$(nproc) O=out \
+            ARCH=${{ env.ARCH }} \
+            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+            CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} \
+            CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
+            CC=clang \
+            LLVM=1 \
+            LLVM_IAS=1 2>&1 | tee build.log
+
+      - name: 🔍 Find Image
+        run: |
+          cd kernel
+
+          find out/arch -name "Image*" -o -name "zImage*" | head -n 1 > image.txt
+          cat image.txt
+
+      - name: 📦 Package
+        if: github.event.inputs.use_anykernel == 'yes'
+        run: |
+          git clone --depth=1 ${{ github.event.inputs.anykernel_source }} anykernel
+          cd anykernel
+
+          cp ../kernel/$(cat ../kernel/image.txt) . || true
+
+          zip -r9 kernel.zip .
+
+      - name: 📦 Raw Package
+        if: github.event.inputs.use_anykernel == 'no'
+        run: |
+          mkdir raw
+          cp kernel/$(cat kernel/image.txt) raw/
+          zip -r kernel.zip raw
