@@ -93,7 +93,7 @@ jobs:
         run: |
           echo "🔧 Installing build dependencies..."
           sudo apt-get update -qq
-          sudo apt-get install -y -qq             bc bison build-essential ccache curl flex             git gnupg gperf imagemagick lib32ncurses5-dev             lib32readline-dev lib32z1-dev libc6-dev-i386             libelf-dev liblz4-tool libncurses5-dev libsdl1.2-dev             libssl-dev libxml2 libxml2-utils lzop pngcrush             rsync schedtool squashfs-tools xsltproc zip zlib1g-dev             libncurses5 libncursesw5 libtinfo5 python3 python3-pip             device-tree-compiler libbrotli-dev libzstd-dev             libarchive-tools zstd 2>&1 | tail -n 5
+          sudo apt-get install -y -qq             bc bison build-essential ccache curl flex             git gnupg gperf imagemagick lib32ncurses5-dev             lib32readline-dev lib32z1-dev libc6-dev-i386             libelf-dev liblz4-tool libncurses5-dev libsdl1.2-dev             libssl-dev libxml2 libxml2-utils lzop pngcrush             rsync schedtool squashfs-tools xsltproc zip zlib1g-dev             libncurses5 libncursesw5 libtinfo5 python3 python3-pip             device-tree-compiler libbrotli-dev libzstd-dev             libarchive-tools zstd lld llvm 2>&1 | tail -n 5
           echo "✅ Dependencies installed successfully!"
 
       - name: 🔧 Setup Python & Packages
@@ -116,12 +116,13 @@ jobs:
         id: kver
         run: |
           cd kernel
-          # Try to detect kernel version from Makefile
           if [ -f Makefile ]; then
             KVER_MAJOR=$(grep -m1 "^VERSION = " Makefile | awk '{print $3}')
             KVER_MINOR=$(grep -m1 "^PATCHLEVEL = " Makefile | awk '{print $3}')
             KVER_PATCH=$(grep -m1 "^SUBLEVEL = " Makefile | awk '{print $3}')
             echo "KERNEL_VERSION=${KVER_MAJOR}.${KVER_MINOR}.${KVER_PATCH}" >> $GITHUB_ENV
+            echo "KVER_MAJOR=${KVER_MAJOR}" >> $GITHUB_ENV
+            echo "KVER_MINOR=${KVER_MINOR}" >> $GITHUB_ENV
             echo "🎯 Detected Kernel Version: ${KVER_MAJOR}.${KVER_MINOR}.${KVER_PATCH}"
           else
             echo "KERNEL_VERSION=unknown" >> $GITHUB_ENV
@@ -134,8 +135,8 @@ jobs:
           echo "🛡️ Patching KernelSU Next..."
           cd kernel
 
-          # Clone KernelSU Next
-          git clone --depth=1 https://github.com/rifsxd/KernelSU-Next.git KernelSU-Next 2>/dev/null ||           git clone --depth=1 https://github.com/tiann/KernelSU.git KernelSU-Next 2>/dev/null ||           git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next 2>/dev/null || true
+          # Clone KernelSU Next with fallback
+          git clone --depth=1 https://github.com/rifsxd/KernelSU-Next.git KernelSU-Next 2>/dev/null ||           git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next 2>/dev/null ||           git clone --depth=1 https://github.com/tiann/KernelSU.git KernelSU-Next 2>/dev/null || true
 
           if [ -d "KernelSU-Next" ]; then
             cd KernelSU-Next
@@ -148,9 +149,7 @@ jobs:
             elif [ -f "KernelSU-Next/setup.sh" ]; then
               bash KernelSU-Next/setup.sh
             else
-              # Manual symlink approach
               ln -sf $(pwd)/KernelSU-Next/kernel $(pwd)/drivers/kernelsu 2>/dev/null || true
-              # Add to Kconfig if needed
               if [ -f "drivers/Kconfig" ]; then
                 if ! grep -q "kernelsu" drivers/Kconfig; then
                   echo "source drivers/kernelsu/Kconfig" >> drivers/Kconfig
@@ -166,75 +165,89 @@ jobs:
             echo "⚠️ Failed to clone KernelSU Next, continuing without patch..."
           fi
 
-      - name: 📥 Clone Clang Toolchain
+      - name: 🔧 Setup Clang Toolchain
         run: |
-          echo "📥 Cloning AOSP Clang toolchain..."
+          echo "🔧 Setting up Clang toolchain..."
           mkdir -p toolchain
           cd toolchain
 
-          # Clone with depth=1 for faster checkout
-          git clone --depth=1 -b master             https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang 2>&1 | tail -n 3
+          # Try Proton Clang first (recommended, includes GCC)
+          echo "📥 Trying Proton Clang..."
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git 2>&1 | tail -n 3
 
-          # Find latest clang version
-          CLANG_DIR=$(ls -d clang/clang-r* 2>/dev/null | sort -V | tail -n 1)
-          if [ -z "$CLANG_DIR" ]; then
-            # Fallback: try to find any clang directory
-            CLANG_DIR=$(find clang -maxdepth 2 -name "bin" -type d | head -n 1 | xargs dirname)
-          fi
-
-          if [ -n "$CLANG_DIR" ] && [ -d "$CLANG_DIR/bin" ]; then
-            echo "CLANG_PATH=$(realpath $CLANG_DIR)" >> $GITHUB_ENV
-            echo "✅ Clang found at: $(realpath $CLANG_DIR)"
-            echo "🔧 Clang version: $($CLANG_DIR/bin/clang --version | head -n 1)"
+          if [ -d "proton-clang/bin" ]; then
+            echo "CLANG_PATH=$(realpath proton-clang)" >> $GITHUB_ENV
+            echo "✅ Proton Clang found!"
+            echo "🔧 Clang version: $(proton-clang/bin/clang --version | head -n 1)"
           else
-            echo "❌ Clang toolchain not found properly!"
-            ls -la clang/
-            exit 1
+            # Fallback: AOSP Clang
+            echo "📥 Falling back to AOSP Clang..."
+            git clone --depth=1 -b master               https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang 2>&1 | tail -n 3
+
+            CLANG_DIR=$(find clang -maxdepth 2 -name "bin" -type d | head -n 1 | xargs dirname 2>/dev/null)
+            if [ -n "$CLANG_DIR" ] && [ -d "$CLANG_DIR/bin" ]; then
+              echo "CLANG_PATH=$(realpath $CLANG_DIR)" >> $GITHUB_ENV
+              echo "✅ AOSP Clang found at: $(realpath $CLANG_DIR)"
+            else
+              echo "❌ No Clang toolchain found!"
+              exit 1
+            fi
           fi
 
-      - name: 📥 Clone GCC Toolchain (Fallback)
-        run: |
-          echo "📥 Setting up GCC toolchain..."
-          cd toolchain
-
-          # Clone aarch64-linux-android-4.9
-          git clone --depth=1 -b master             https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9             gcc-aarch64 2>&1 | tail -n 3 || true
-
-          # Clone arm-linux-androideabi-4.9 for 32-bit support
-          git clone --depth=1 -b master             https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9             gcc-arm 2>&1 | tail -n 3 || true
-
-          echo "✅ GCC toolchain setup complete!"
+          # Setup GCC fallback (for kernels that need it)
+          cd ${{ github.workspace }}
+          if [ ! -d "toolchain/gcc-aarch64" ]; then
+            echo "📥 Setting up GCC fallback..."
+            cd toolchain
+            # Try to get GCC from Android prebuilts
+            git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git gcc-aarch64 2>&1 | tail -n 3 || true
+            git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git gcc-arm 2>&1 | tail -n 3 || true
+            cd ..
+          fi
+          echo "✅ Toolchain setup complete!"
 
       - name: 🔧 Setup Build Environment
         run: |
           echo "🔧 Setting up build environment..."
           cd kernel
 
-          # Export build variables
           export KBUILD_BUILD_USER="${{ github.event.inputs.kbuild_user }}"
           export KBUILD_BUILD_HOST="GitHub-Actions"
           export KBUILD_BUILD_TIMESTAMP="${{ env.FULL_DATE }}"
 
-          # Set PATH
-          export PATH="${{ env.CLANG_PATH }}/bin:$PATH"
-
-          # Detect if we need arm64 or arm
+          # Detect architecture
           if [ -d "arch/arm64" ]; then
             export ARCH=arm64
             export SUBARCH=arm64
-            export CROSS_COMPILE="${{ github.workspace }}/toolchain/gcc-aarch64/bin/aarch64-linux-android-"
-            export CROSS_COMPILE_ARM32="${{ github.workspace }}/toolchain/gcc-arm/bin/arm-linux-androideabi-"
-            export CLANG_TRIPLE="aarch64-linux-gnu-"
             echo "🎯 Architecture: arm64"
           else
             export ARCH=arm
             export SUBARCH=arm
-            export CROSS_COMPILE="${{ github.workspace }}/toolchain/gcc-arm/bin/arm-linux-androideabi-"
-            export CLANG_TRIPLE="arm-linux-gnueabihf-"
             echo "🎯 Architecture: arm"
           fi
 
-          # Save to GITHUB_ENV for next steps
+          # Set PATH with Clang first
+          export PATH="${{ env.CLANG_PATH }}/bin:$PATH"
+
+          # Determine CROSS_COMPILE based on available tools
+          if [ -f "${{ github.workspace }}/toolchain/gcc-aarch64/bin/aarch64-linux-android-"*gcc ]; then
+            export CROSS_COMPILE="${{ github.workspace }}/toolchain/gcc-aarch64/bin/aarch64-linux-android-"
+            export CROSS_COMPILE_ARM32="${{ github.workspace }}/toolchain/gcc-arm/bin/arm-linux-androideabi-"
+            echo "🔧 Using GCC cross compiler"
+          else
+            # Use Clang's built-in cross compilation
+            if [ "$ARCH" = "arm64" ]; then
+              export CROSS_COMPILE="aarch64-linux-gnu-"
+              export CROSS_COMPILE_ARM32="arm-linux-gnueabihf-"
+            else
+              export CROSS_COMPILE="arm-linux-gnueabihf-"
+            fi
+            echo "🔧 Using Clang built-in cross compilation"
+          fi
+
+          export CLANG_TRIPLE="aarch64-linux-gnu-"
+
+          # Save to GITHUB_ENV
           echo "ARCH=${ARCH}" >> $GITHUB_ENV
           echo "SUBARCH=${SUBARCH}" >> $GITHUB_ENV
           echo "CROSS_COMPILE=${CROSS_COMPILE}" >> $GITHUB_ENV
@@ -245,12 +258,13 @@ jobs:
 
           echo "✅ Build environment configured!"
 
-      - name: 🧹 Clean Build (Optional)
+      - name: 🧹 Clean Build
         run: |
           echo "🧹 Cleaning previous build artifacts..."
           cd kernel
           make clean 2>/dev/null || true
           make mrproper 2>/dev/null || true
+          rm -rf out
           echo "✅ Clean complete!"
 
       - name: ⚙️ Generate Defconfig
@@ -267,7 +281,31 @@ jobs:
           export KBUILD_BUILD_USER=${{ env.KBUILD_BUILD_USER }}
           export KBUILD_BUILD_HOST=${{ env.KBUILD_BUILD_HOST }}
 
-          make ${{ github.event.inputs.defconfig }} O=out 2>&1 | tail -n 10
+          # Disable stack protector before build for older kernels
+          if [ -f "arch/${{ env.ARCH }}/configs/${{ github.event.inputs.defconfig }}" ]; then
+            DEFCONFIG_PATH="arch/${{ env.ARCH }}/configs/${{ github.event.inputs.defconfig }}"
+          elif [ -f "arch/arm64/configs/${{ github.event.inputs.defconfig }}" ]; then
+            DEFCONFIG_PATH="arch/arm64/configs/${{ github.event.inputs.defconfig }}"
+          elif [ -f "arch/arm/configs/${{ github.event.inputs.defconfig }}" ]; then
+            DEFCONFIG_PATH="arch/arm/configs/${{ github.event.inputs.defconfig }}"
+          else
+            echo "❌ Defconfig not found!"
+            find arch -name "*${{ github.event.inputs.defconfig }}*" 2>/dev/null || true
+            exit 1
+          fi
+
+          # Disable stack protector for compatibility
+          sed -i 's/CONFIG_CC_STACKPROTECTOR=y/# CONFIG_CC_STACKPROTECTOR is not set/g' "$DEFCONFIG_PATH" 2>/dev/null || true
+          sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g' "$DEFCONFIG_PATH" 2>/dev/null || true
+          sed -i 's/CONFIG_CC_STACKPROTECTOR_AUTO=y/# CONFIG_CC_STACKPROTECTOR_AUTO is not set/g' "$DEFCONFIG_PATH" 2>/dev/null || true
+          sed -i 's/CONFIG_CC_STACKPROTECTOR_REGULAR=y/# CONFIG_CC_STACKPROTECTOR_REGULAR is not set/g' "$DEFCONFIG_PATH" 2>/dev/null || true
+
+          echo "# CONFIG_CC_STACKPROTECTOR is not set" >> "$DEFCONFIG_PATH"
+          echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set" >> "$DEFCONFIG_PATH"
+          echo "# CONFIG_CC_STACKPROTECTOR_AUTO is not set" >> "$DEFCONFIG_PATH"
+          echo "# CONFIG_CC_STACKPROTECTOR_REGULAR is not set" >> "$DEFCONFIG_PATH"
+
+          make O=out ${{ github.event.inputs.defconfig }} 2>&1 | tail -n 10
           echo "✅ Defconfig generated!"
 
       - name: 🔨 Build Kernel
@@ -285,64 +323,35 @@ jobs:
           export KBUILD_BUILD_USER=${{ env.KBUILD_BUILD_USER }}
           export KBUILD_BUILD_HOST=${{ env.KBUILD_BUILD_HOST }}
 
-          # Build with Clang + LLVM tools
-          make -j$(nproc --all) O=out             CC=clang             AR=llvm-ar             NM=llvm-nm             OBJCOPY=llvm-objcopy             OBJDUMP=llvm-objdump             STRIP=llvm-strip             CROSS_COMPILE=${{ env.CROSS_COMPILE }}             CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }}             CLANG_TRIPLE=${{ env.CLANG_TRIPLE }}             2>&1 | tee build.log | tail -n 30
+          # Determine build flags based on kernel version
+          BUILD_FLAGS="CC=clang"
+
+          # Check if we have llvm tools
+          if command -v llvm-ar &> /dev/null || [ -f "${{ env.CLANG_PATH }}/bin/llvm-ar" ]; then
+            BUILD_FLAGS="$BUILD_FLAGS AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip"
+          fi
+
+          # For older kernels (4.9, 4.14, 4.19), use GCC ld as fallback
+          if [ -f "${{ github.workspace }}/toolchain/gcc-aarch64/bin/aarch64-linux-android-ld" ]; then
+            BUILD_FLAGS="$BUILD_FLAGS LD=${{ github.workspace }}/toolchain/gcc-aarch64/bin/aarch64-linux-android-ld"
+          elif [ -f "${{ env.CLANG_PATH }}/bin/ld.lld" ]; then
+            BUILD_FLAGS="$BUILD_FLAGS LD=ld.lld"
+          fi
+
+          # Use LLVM integrated assembler
+          BUILD_FLAGS="$BUILD_FLAGS AS=llvm-as"
+
+          echo "🔧 Build flags: $BUILD_FLAGS"
+
+          # Build
+          make -j$(nproc --all) O=out $BUILD_FLAGS             CROSS_COMPILE=${{ env.CROSS_COMPILE }}             CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }}             CLANG_TRIPLE=${{ env.CLANG_TRIPLE }}             2>&1 | tee build.log | tail -n 50
 
           BUILD_STATUS=${PIPESTATUS[0]}
 
           if [ $BUILD_STATUS -ne 0 ]; then
-            echo "❌ Build failed! Checking for common errors..."
-
-            # Check for common errors
-            if grep -q "vdso" build.log; then
-              echo "⚠️ VDSO error detected! Applying fix..."
-              # Fix VDSO compilation issues
-              if [ -f "arch/arm64/kernel/vdso/Makefile" ]; then
-                sed -i 's/-Wl,-Bdynamic//g' arch/arm64/kernel/vdso/Makefile 2>/dev/null || true
-                sed -i 's/-Wl,-Bstatic//g' arch/arm64/kernel/vdso/Makefile 2>/dev/null || true
-              fi
-              if [ -f "arch/arm/kernel/vdso/Makefile" ]; then
-                sed -i 's/-Wl,-Bdynamic//g' arch/arm/kernel/vdso/Makefile 2>/dev/null || true
-                sed -i 's/-Wl,-Bstatic//g' arch/arm/kernel/vdso/Makefile 2>/dev/null || true
-              fi
-
-              # Retry build
-              make -j$(nproc --all) O=out                 CC=clang                 AR=llvm-ar                 NM=llvm-nm                 OBJCOPY=llvm-objcopy                 OBJDUMP=llvm-objdump                 STRIP=llvm-strip                 CROSS_COMPILE=${{ env.CROSS_COMPILE }}                 CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }}                 CLANG_TRIPLE=${{ env.CLANG_TRIPLE }}                 2>&1 | tee build.log | tail -n 30
-              BUILD_STATUS=${PIPESTATUS[0]}
-            fi
-
-            if grep -q "stack-protector" build.log || grep -q "stack protector" build.log; then
-              echo "⚠️ Stack protector error detected! Applying fix..."
-              # Disable stack protector
-              sed -i 's/CONFIG_CC_STACKPROTECTOR=y/# CONFIG_CC_STACKPROTECTOR is not set/g' out/.config 2>/dev/null || true
-              sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g' out/.config 2>/dev/null || true
-              sed -i 's/CONFIG_CC_STACKPROTECTOR_AUTO=y/# CONFIG_CC_STACKPROTECTOR_AUTO is not set/g' out/.config 2>/dev/null || true
-              echo "# CONFIG_CC_STACKPROTECTOR is not set" >> out/.config 2>/dev/null || true
-              echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set" >> out/.config 2>/dev/null || true
-              echo "# CONFIG_CC_STACKPROTECTOR_AUTO is not set" >> out/.config 2>/dev/null || true
-
-              # Retry build
-              make -j$(nproc --all) O=out                 CC=clang                 AR=llvm-ar                 NM=llvm-nm                 OBJCOPY=llvm-objcopy                 OBJDUMP=llvm-objdump                 STRIP=llvm-strip                 CROSS_COMPILE=${{ env.CROSS_COMPILE }}                 CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }}                 CLANG_TRIPLE=${{ env.CLANG_TRIPLE }}                 2>&1 | tee build.log | tail -n 30
-              BUILD_STATUS=${PIPESTATUS[0]}
-            fi
-
-            if grep -q "linker.*not found" build.log || grep -q "ld.*not found" build.log || grep -q "cannot find -ld" build.log; then
-              echo "⚠️ Linker error detected! Applying fix..."
-              # Fix linker issues
-              export LD_LIBRARY_PATH="${{ env.CLANG_PATH }}/lib:$LD_LIBRARY_PATH"
-              export LDFLAGS="-L${{ env.CLANG_PATH }}/lib"
-
-              # Retry build
-              make -j$(nproc --all) O=out                 CC=clang                 AR=llvm-ar                 NM=llvm-nm                 OBJCOPY=llvm-objcopy                 OBJDUMP=llvm-objdump                 STRIP=llvm-strip                 LD=ld.lld                 CROSS_COMPILE=${{ env.CROSS_COMPILE }}                 CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }}                 CLANG_TRIPLE=${{ env.CLANG_TRIPLE }}                 2>&1 | tee build.log | tail -n 30
-              BUILD_STATUS=${PIPESTATUS[0]}
-            fi
-
-            if [ $BUILD_STATUS -ne 0 ]; then
-              echo "❌ Build still failed after fixes!"
-              echo "📋 Last 50 lines of build log:"
-              tail -n 50 build.log
-              exit 1
-            fi
+            echo "❌ Build failed! Checking for errors..."
+            tail -n 100 build.log
+            exit 1
           fi
 
           echo "✅ Kernel build completed successfully!"
@@ -353,9 +362,8 @@ jobs:
           echo "🔍 Searching for compiled kernel image..."
           cd kernel
 
-          # Common kernel image locations
           KERNEL_IMG=""
-          for img in "out/arch/${{ env.ARCH }}/boot/Image.gz-dtb"                      "out/arch/${{ env.ARCH }}/boot/Image.gz"                      "out/arch/${{ env.ARCH }}/boot/Image"                      "arch/${{ env.ARCH }}/boot/Image.gz-dtb"                      "arch/${{ env.ARCH }}/boot/Image.gz"                      "arch/${{ env.ARCH }}/boot/Image"                      "out/arch/arm64/boot/Image.gz-dtb"                      "out/arch/arm64/boot/Image.gz"                      "out/arch/arm64/boot/Image"                      "out/arch/arm/boot/zImage"                      "out/arch/arm/boot/zImage-dtb"                      "arch/arm/boot/zImage"                      "arch/arm/boot/zImage-dtb"; do
+          for img in "out/arch/arm64/boot/Image.gz-dtb"                      "out/arch/arm64/boot/Image.gz"                      "out/arch/arm64/boot/Image"                      "out/arch/arm/boot/zImage-dtb"                      "out/arch/arm/boot/zImage"                      "arch/arm64/boot/Image.gz-dtb"                      "arch/arm64/boot/Image.gz"                      "arch/arm64/boot/Image"                      "arch/arm/boot/zImage-dtb"                      "arch/arm/boot/zImage"; do
             if [ -f "$img" ]; then
               KERNEL_IMG="$img"
               echo "✅ Kernel image found: $img"
@@ -365,9 +373,7 @@ jobs:
 
           if [ -z "$KERNEL_IMG" ]; then
             echo "❌ Kernel image not found!"
-            echo "📂 Available files in boot directory:"
-            find out/arch -name "Image*" -o -name "zImage*" 2>/dev/null || true
-            find arch -name "Image*" -o -name "zImage*" 2>/dev/null || true
+            find out/arch -type f 2>/dev/null | head -n 20 || true
             exit 1
           fi
 
@@ -380,15 +386,8 @@ jobs:
         run: |
           echo "📦 Preparing output filename..."
 
-          # Determine variant based on KernelSU
           if [ "${{ github.event.inputs.ksu_next }}" == "yes" ]; then
             VARIANT="ksu"
-          else
-            VARIANT=""
-          fi
-
-          # Build filename
-          if [ -n "$VARIANT" ]; then
             OUTPUT_NAME="${{ github.event.inputs.kernel_name }}_${{ github.event.inputs.device_codename }}-${VARIANT}-${{ env.DATE }}.zip"
           else
             OUTPUT_NAME="${{ github.event.inputs.kernel_name }}_${{ github.event.inputs.device_codename }}-${{ env.DATE }}.zip"
@@ -402,34 +401,26 @@ jobs:
         run: |
           echo "📦 Packaging with AnyKernel3..."
 
-          # Clone AnyKernel3
           git clone --depth=1 -b ${{ github.event.inputs.anykernel_branch }}             ${{ github.event.inputs.anykernel_source }} anykernel 2>&1 | tail -n 3
 
           cd anykernel
+          rm -f zImage Image* *.dtb dtbo.img 2>/dev/null || true
 
-          # Clean up old zImage
-          rm -f zImage Image* *.dtb 2>/dev/null || true
-
-          # Copy new kernel image
           cp ../kernel/${{ env.KERNEL_IMAGE }} . 2>/dev/null ||           cp ${{ env.KERNEL_IMAGE }} . 2>/dev/null || true
 
-          # Handle dtb if present
           if [ -f "../kernel/out/arch/${{ env.ARCH }}/boot/dtb" ]; then
             cp ../kernel/out/arch/${{ env.ARCH }}/boot/dtb . 2>/dev/null || true
           fi
 
-          # Handle dtbo if present
           if [ -f "../kernel/out/arch/${{ env.ARCH }}/boot/dtbo.img" ]; then
             cp ../kernel/out/arch/${{ env.ARCH }}/boot/dtbo.img . 2>/dev/null || true
           fi
 
-          # Update anykernel.sh if exists
           if [ -f "anykernel.sh" ]; then
             sed -i "s/kernel.string=.*/kernel.string=${{ github.event.inputs.kernel_name }}/g" anykernel.sh 2>/dev/null || true
             sed -i "s/device.name1=.*/device.name1=${{ github.event.inputs.device_codename }}/g" anykernel.sh 2>/dev/null || true
           fi
 
-          # Create zip
           zip -r9 ../${{ env.OUTPUT_NAME }} * -x ".git/*" "*.md" "LICENSE" 2>&1 | tail -n 5
           cd ..
 
@@ -444,17 +435,14 @@ jobs:
           mkdir -p raw_kernel
           cp kernel/${{ env.KERNEL_IMAGE }} raw_kernel/ 2>/dev/null ||           cp ${{ env.KERNEL_IMAGE }} raw_kernel/ 2>/dev/null || true
 
-          # Include dtb if available
           if [ -f "kernel/out/arch/${{ env.ARCH }}/boot/dtb" ]; then
             cp kernel/out/arch/${{ env.ARCH }}/boot/dtb raw_kernel/ 2>/dev/null || true
           fi
 
-          # Include dtbo if available
           if [ -f "kernel/out/arch/${{ env.ARCH }}/boot/dtbo.img" ]; then
             cp kernel/out/arch/${{ env.ARCH }}/boot/dtbo.img raw_kernel/ 2>/dev/null || true
           fi
 
-          # Create info file
           cat > raw_kernel/README.txt << EOF
           Kernel: ${{ github.event.inputs.kernel_name }}
           Device: ${{ github.event.inputs.device_codename }}
