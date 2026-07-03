@@ -1,4 +1,4 @@
-name: 🚀 KernelSU Builder
+name: 🚀 Kernel Builder
 
 on:
   workflow_dispatch:
@@ -367,9 +367,17 @@ jobs:
         run: |
           echo "🧹 Cleaning previous build artifacts..."
           cd kernel
+          # Full clean
           make clean 2>/dev/null || true
           make mrproper 2>/dev/null || true
           rm -rf out
+          rm -f .config .config.old
+          # Clean KernelSU if exists
+          rm -rf drivers/kernelsu 2>/dev/null || true
+          rm -rf KernelSU-Next 2>/dev/null || true
+          # Remove any stale object files
+          find . -name "*.o" -delete 2>/dev/null || true
+          find . -name "*.o.cmd" -delete 2>/dev/null || true
           echo "✅ Clean complete!"
 
       - name: ⚙️ Generate Defconfig
@@ -450,4 +458,145 @@ jobs:
             BUILD_FLAGS="$BUILD_FLAGS LD=ld.lld"
           fi
 
-          # Use LLV
+          # Use LLVM integrated assembler
+          BUILD_FLAGS="$BUILD_FLAGS AS=llvm-as"
+
+          echo "🔧 Build flags: $BUILD_FLAGS"
+
+          # Build
+          make -j$(nproc --all) O=out $BUILD_FLAGS             CROSS_COMPILE=${{ env.CROSS_COMPILE }}             CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }}             CLANG_TRIPLE=${{ env.CLANG_TRIPLE }}             2>&1 | tee build.log | tail -n 50
+
+          BUILD_STATUS=${PIPESTATUS[0]}
+
+          if [ $BUILD_STATUS -ne 0 ]; then
+            echo "❌ Build failed! Checking for errors..."
+            tail -n 100 build.log
+            exit 1
+          fi
+
+          echo "✅ Kernel build completed successfully!"
+
+      - name: 🔍 Find Kernel Image
+        id: kernel_image
+        run: |
+          echo "🔍 Searching for compiled kernel image..."
+          cd kernel
+
+          KERNEL_IMG=""
+          for img in "out/arch/arm64/boot/Image.gz-dtb"                      "out/arch/arm64/boot/Image.gz"                      "out/arch/arm64/boot/Image"                      "out/arch/arm/boot/zImage-dtb"                      "out/arch/arm/boot/zImage"                      "arch/arm64/boot/Image.gz-dtb"                      "arch/arm64/boot/Image.gz"                      "arch/arm64/boot/Image"                      "arch/arm/boot/zImage-dtb"                      "arch/arm/boot/zImage"; do
+            if [ -f "$img" ]; then
+              KERNEL_IMG="$img"
+              echo "✅ Kernel image found: $img"
+              break
+            fi
+          done
+
+          if [ -z "$KERNEL_IMG" ]; then
+            echo "❌ Kernel image not found!"
+            find out/arch -type f 2>/dev/null | head -n 20 || true
+            exit 1
+          fi
+
+          echo "KERNEL_IMAGE=${KERNEL_IMG}" >> $GITHUB_ENV
+          echo "KERNEL_SIZE=$(du -h ${KERNEL_IMG} | cut -f1)" >> $GITHUB_ENV
+          echo "📊 Kernel size: $(du -h ${KERNEL_IMG} | cut -f1)"
+
+      - name: 📦 Prepare Output Filename
+        id: filename
+        run: |
+          echo "📦 Preparing output filename..."
+
+          if [ "${{ github.event.inputs.ksu_next }}" == "yes" ]; then
+            VARIANT="ksu"
+            OUTPUT_NAME="${{ github.event.inputs.kernel_name }}_${{ github.event.inputs.device_codename }}-${VARIANT}-${{ env.DATE }}.zip"
+          else
+            OUTPUT_NAME="${{ github.event.inputs.kernel_name }}_${{ github.event.inputs.device_codename }}-${{ env.DATE }}.zip"
+          fi
+
+          echo "OUTPUT_NAME=${OUTPUT_NAME}" >> $GITHUB_ENV
+          echo "📝 Output filename: ${OUTPUT_NAME}"
+
+      - name: 📦 Package with AnyKernel3
+        if: github.event.inputs.use_anykernel == 'yes'
+        run: |
+          echo "📦 Packaging with AnyKernel3..."
+
+          git clone --depth=1 -b ${{ github.event.inputs.anykernel_branch }}             ${{ github.event.inputs.anykernel_source }} anykernel 2>&1 | tail -n 3
+
+          cd anykernel
+          rm -f zImage Image* *.dtb dtbo.img *.zip 2>/dev/null || true
+
+          cp ../kernel/${{ env.KERNEL_IMAGE }} . 2>/dev/null ||           cp ${{ env.KERNEL_IMAGE }} . 2>/dev/null || true
+
+          if [ -f "../kernel/out/arch/${{ env.ARCH }}/boot/dtb" ]; then
+            cp ../kernel/out/arch/${{ env.ARCH }}/boot/dtb . 2>/dev/null || true
+          fi
+
+          if [ -f "../kernel/out/arch/${{ env.ARCH }}/boot/dtbo.img" ]; then
+            cp ../kernel/out/arch/${{ env.ARCH }}/boot/dtbo.img . 2>/dev/null || true
+          fi
+
+          if [ -f "anykernel.sh" ]; then
+            sed -i "s/kernel.string=.*/kernel.string=${{ github.event.inputs.kernel_name }}/g" anykernel.sh 2>/dev/null || true
+            sed -i "s/device.name1=.*/device.name1=${{ github.event.inputs.device_codename }}/g" anykernel.sh 2>/dev/null || true
+          fi
+
+          zip -r9 ../${{ env.OUTPUT_NAME }} * -x ".git/*" "*.md" "LICENSE" "*.zip" 2>&1 | tail -n 5
+          cd ..
+
+          echo "✅ AnyKernel3 package created!"
+          echo "📊 Package size: $(du -h ${{ env.OUTPUT_NAME }} | cut -f1)"
+
+      - name: 📦 Package Raw Kernel
+        if: github.event.inputs.use_anykernel == 'no'
+        run: |
+          echo "📦 Packaging raw kernel..."
+
+          mkdir -p raw_kernel
+          cp kernel/${{ env.KERNEL_IMAGE }} raw_kernel/ 2>/dev/null ||           cp ${{ env.KERNEL_IMAGE }} raw_kernel/ 2>/dev/null || true
+
+          if [ -f "kernel/out/arch/${{ env.ARCH }}/boot/dtb" ]; then
+            cp kernel/out/arch/${{ env.ARCH }}/boot/dtb raw_kernel/ 2>/dev/null || true
+          fi
+
+          if [ -f "kernel/out/arch/${{ env.ARCH }}/boot/dtbo.img" ]; then
+            cp kernel/out/arch/${{ env.ARCH }}/boot/dtbo.img raw_kernel/ 2>/dev/null || true
+          fi
+
+          cat > raw_kernel/README.txt << EOF
+          Kernel: ${{ github.event.inputs.kernel_name }}
+          Device: ${{ github.event.inputs.device_codename }}
+          Date: ${{ env.FULL_DATE }}
+          KernelSU Next: ${{ github.event.inputs.ksu_next }}
+          Build User: ${{ github.event.inputs.kbuild_user }}
+          EOF
+
+          cd raw_kernel
+          zip -r9 ../${{ env.OUTPUT_NAME }} * -x "*.zip" 2>&1 | tail -n 5
+          cd ..
+
+          echo "✅ Raw kernel package created!"
+          echo "📊 Package size: $(du -h ${{ env.OUTPUT_NAME }} | cut -f1)"
+
+      - name: 📤 Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.OUTPUT_NAME }}
+          path: ${{ env.OUTPUT_NAME }}
+          retention-days: 7
+
+      - name: 🎉 Build Summary
+        run: |
+          echo "╔════════════════════════════════════════════════════════════╗"
+          echo "║                   🎉 BUILD SUCCESSFUL! 🎉                  ║"
+          echo "╠════════════════════════════════════════════════════════════╣"
+          echo "║  🏷️  Kernel Name: ${{ github.event.inputs.kernel_name }}"
+          echo "║  📱 Device: ${{ github.event.inputs.device_codename }}"
+          echo "║  🛡️  KernelSU Next: ${{ github.event.inputs.ksu_next }}"
+          echo "║  📦 Package: ${{ env.OUTPUT_NAME }}"
+          echo "║  📊 Kernel Size: ${{ env.KERNEL_SIZE }}"
+          echo "║  📅 Build Date: ${{ env.FULL_DATE }}"
+          echo "║  👤 Built by: ${{ github.event.inputs.kbuild_user }}"
+          echo "╚════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "📥 Download your kernel from the Artifacts section!"
