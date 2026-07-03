@@ -4,109 +4,158 @@ on:
   workflow_dispatch:
     inputs:
       KERNEL_SOURCE_URL:
-        description: 'Kernel Source URL'
         required: true
       KERNEL_SOURCE_BRANCH:
-        description: 'Kernel Source Branch'
         required: true
       KERNEL_DEFCONFIG:
-        description: 'Kernel Defconfig'
         required: true
       KSU_PATCH:
-        description: 'KernelSU Next Patch (yes/no)'
         required: true
       KBUILD_USER:
-        description: 'KBuild User'
         required: true
       DEVICE_CODENAME:
-        description: 'Device Codename'
         required: true
       KERNEL_NAME:
-        description: 'Kernel Name'
         required: true
       USE_ANYKERNEL:
-        description: 'Use AnyKernel (yes/no)'
         required: true
       ANYKERNEL_SOURCE:
-        description: 'Anykernel Source'
         required: false
       ANYKERNEL_BRANCH:
-        description: 'Anykernel Branch'
         required: false
       TIMEZONE:
-        description: 'Timezone'
-        default: 'Asia/Jakarta'
         required: true
+        default: Asia/Jakarta
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: 📂 Checkout Repo
+      - name: 📂 Checkout
         uses: actions/checkout@v4
 
-      - name: ⚙️ Setup Environment
+      # =========================
+      # ⚙️ DEPENDENCIES (FIX LLD HERE)
+      # =========================
+      - name: ⚙️ Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git wget build-essential bc bison flex libssl-dev \
-            libncurses5-dev libncursesw5-dev python3 python3-pip zip curl
+          sudo apt-get install -y \
+            git curl wget zip unzip bc bison flex \
+            build-essential libssl-dev libncurses-dev \
+            python3 python3-pip \
+            lld llvm
+
           sudo timedatectl set-timezone "${{ github.event.inputs.TIMEZONE }}"
 
-      - name: 📥 Clone Kernel Source
+      # =========================
+      # 📥 KERNEL SOURCE
+      # =========================
+      - name: 📥 Clone Kernel
         run: |
-          git clone ${{ github.event.inputs.KERNEL_SOURCE_URL }} -b ${{ github.event.inputs.KERNEL_SOURCE_BRANCH }} kernel
+          git clone --depth=1 \
+            ${{ github.event.inputs.KERNEL_SOURCE_URL }} \
+            -b ${{ github.event.inputs.KERNEL_SOURCE_BRANCH }} kernel
 
-      - name: 🛠️ Clone Clang 13
+      # =========================
+      # 🛠️ AOSP CLANG FIXED
+      # =========================
+      - name: 🛠️ Setup AOSP Clang (FIXED LLD)
         run: |
-          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b master clang-prebuilt
-          export PATH=$PWD/clang-prebuilt/clang-r416183b/bin:$PATH
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang
 
-      - name: 🔧 Setup GCC 4.9
+          export CLANG_DIR=$(ls -d clang/clang-* | sort | tail -n 1)
+
+          echo "$PWD/$CLANG_DIR/bin" >> $GITHUB_PATH
+
+          # 🔥 FORCE CHECK LLD
+          echo "Checking ld.lld..."
+          $PWD/$CLANG_DIR/bin/ld.lld --version || echo "lld from clang not found, using system lld"
+
+      # =========================
+      # 🔧 GCC 4.9 TOOLCHAIN
+      # =========================
+      - name: 🔧 Setup GCC
         run: |
-          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc32
-          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc32
 
-      - name: 🧩 Apply KernelSU Next Patch (Optional)
+      # =========================
+      # 🧩 KernelSU (optional)
+      # =========================
+      - name: 🧩 KernelSU
         if: ${{ github.event.inputs.KSU_PATCH == 'yes' }}
         run: |
           cd kernel
-          echo "Applying KernelSU Next patch..."
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s stable
+          curl -LSs https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh | bash -s stable
 
+      # =========================
+      # 🏗️ BUILD KERNEL (FIXED LLD HERE)
+      # =========================
       - name: 🏗️ Build Kernel
         run: |
           cd kernel
+
           export ARCH=arm64
           export SUBARCH=arm64
+
+          # 🔥 IMPORTANT FIX (LD ISSUE)
           export CC=clang
+          export LLVM=1
+          export LLVM_IAS=1
+          export LD=ld.lld
+
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=$PWD/../gcc64/bin/aarch64-linux-android-
           export CROSS_COMPILE_ARM32=$PWD/../gcc32/bin/arm-linux-androideabi-
+
           export KBUILD_BUILD_USER=${{ github.event.inputs.KBUILD_USER }}
           export KBUILD_BUILD_HOST=GitHubActions
 
-          make O=out ${{ github.event.inputs.KERNEL_DEFCONFIG }}
-          make -j$(nproc) O=out
+          # 🔥 FORCE SAFETY
+          export PATH=$PATH:$(pwd)/../clang/clang-*/bin
+          export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/llvm
 
-      - name: 📦 Package Kernel
+          make O=out ${{ github.event.inputs.KERNEL_DEFCONFIG }}
+          make -j$(nproc --all) O=out
+
+      # =========================
+      # 📦 PACKAGE
+      # =========================
+      - name: 📦 Package
         run: |
           cd kernel/out/arch/arm64/boot
+
           VARIANT=""
-          if [ "${{ github.event.inputs.KSU_PATCH }}" == "yes" ]; then
+          if [ "${{ github.event.inputs.KSU_PATCH }}" = "yes" ]; then
             VARIANT="-ksu"
           fi
-          DATE=$(date +%d%m%Y)
-          ZIPNAME="${{ github.event.inputs.KERNEL_NAME }}_${{ github.event.inputs.DEVICE_CODENAME }}${VARIANT}-${DATE}.zip"
 
-          if [ "${{ github.event.inputs.USE_ANYKERNEL }}" == "yes" ]; then
-            git clone ${{ github.event.inputs.ANYKERNEL_SOURCE }} -b ${{ github.event.inputs.ANYKERNEL_BRANCH }} anykernel
-            cp Image.gz-dtb anykernel/
+          DATE=$(date +%d%m%Y)
+          ZIP="${{ github.event.inputs.KERNEL_NAME }}_${{ github.event.inputs.DEVICE_CODENAME }}${VARIANT}-${DATE}.zip"
+
+          if [ "${{ github.event.inputs.USE_ANYKERNEL }}" = "yes" ]; then
+            git clone --depth=1 \
+              ${{ github.event.inputs.ANYKERNEL_SOURCE }} \
+              -b ${{ github.event.inputs.ANYKERNEL_BRANCH }} anykernel
+
+            cp Image* anykernel/ 2>/dev/null || true
             cd anykernel
-            zip -r9 "../$ZIPNAME" *
+            zip -r9 "../$ZIP" .
           else
-            zip -r9 "$ZIPNAME" Image.gz-dtb
+            zip -r9 "$ZIP" Image* dtb* 2>/dev/null || true
           fi
 
+      # =========================
+      # 📤 UPLOAD
+      # =========================
       - name: 📤 Upload Artifact
         uses: actions/upload-artifact@v4
         with:
