@@ -88,6 +88,12 @@ jobs:
 
     steps:
       # ---------------------------------------------------------------
+      # 0. Checkout Repo (best practice - repo ini sendiri, bukan kernel source)
+      # ---------------------------------------------------------------
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ---------------------------------------------------------------
       # 1. Setup Environment
       # ---------------------------------------------------------------
       - name: Set Timezone
@@ -580,4 +586,3 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
