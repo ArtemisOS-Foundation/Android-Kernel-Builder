@@ -1,71 +1,70 @@
-
-Action: file_editor create /app/.github/workflows/kernel-build.yml --file-text "name: Android Kernel Build
+name: Android Kernel Build
 
 on:
   workflow_dispatch:
     inputs:
       KERNEL_SOURCE_URL:
-        description: \"Kernel Source URL (contoh: https://github.com/username/kernel_repo)\"
+        description: "Kernel Source URL (contoh: https://github.com/username/kernel_repo)"
         required: true
-        default: \"https://github.com/username/kernel_repo\"
+        default: "https://github.com/username/kernel_repo"
       KERNEL_SOURCE_BRANCH:
-        description: \"Kernel Source Branch\"
+        description: "Kernel Source Branch"
         required: true
-        default: \"main\"
+        default: "main"
       KERNEL_DEFCONFIG:
-        description: \"Kernel Defconfig (contoh: vendor/lavender-perf_defconfig)\"
+        description: "Kernel Defconfig (contoh: vendor/lavender-perf_defconfig)"
         required: true
-        default: \"defconfig\"
+        default: "defconfig"
       KERNELSU_NEXT:
-        description: \"KernelSU Next Patch (yes / no)\"
+        description: "KernelSU Next Patch (yes / no)"
         required: true
-        default: \"no\"
+        default: "no"
         type: choice
         options:
-          - \"yes\"
-          - \"no\"
+          - "yes"
+          - "no"
       KBUILD_USER:
-        description: \"KBuild User\"
+        description: "KBuild User"
         required: true
-        default: \"builder\"
+        default: "builder"
       DEVICE_CODENAME:
-        description: \"Device Codename (contoh: lavender)\"
+        description: "Device Codename (contoh: lavender)"
         required: true
-        default: \"lavender\"
+        default: "lavender"
       KERNEL_NAME:
-        description: \"Kernel Name (contoh: MyKernel)\"
+        description: "Kernel Name (contoh: MyKernel)"
         required: true
-        default: \"MyKernel\"
+        default: "MyKernel"
       USE_ANYKERNEL:
-        description: \"Use AnyKernel3 (yes / no)\"
+        description: "Use AnyKernel3 (yes / no)"
         required: true
-        default: \"yes\"
+        default: "yes"
         type: choice
         options:
-          - \"yes\"
-          - \"no\"
+          - "yes"
+          - "no"
       ANYKERNEL_SOURCE:
-        description: \"AnyKernel Source URL\"
+        description: "AnyKernel Source URL"
         required: false
-        default: \"https://github.com/osm0sis/AnyKernel3\"
+        default: "https://github.com/osm0sis/AnyKernel3"
       ANYKERNEL_BRANCH:
-        description: \"AnyKernel Branch\"
+        description: "AnyKernel Branch"
         required: false
-        default: \"master\"
+        default: "master"
       TOOLCHAIN:
-        description: \"Toolchain / Compiler\"
+        description: "Toolchain / Compiler"
         required: true
-        default: \"auto\"
+        default: "auto"
         type: choice
         options:
-          - \"auto\"
-          - \"aosp-clang\"
-          - \"neutron-clang\"
-          - \"proton-clang\"
+          - "auto"
+          - "aosp-clang"
+          - "neutron-clang"
+          - "proton-clang"
       TIMEZONE:
-        description: \"Timezone (bebas, default Asia/Jakarta)\"
+        description: "Timezone (bebas, default Asia/Jakarta)"
         required: true
-        default: \"Asia/Jakarta\"
+        default: "Asia/Jakarta"
 
 jobs:
   build:
@@ -93,19 +92,23 @@ jobs:
       # ---------------------------------------------------------------
       - name: Set Timezone
         run: |
-          sudo timedatectl set-timezone \"${TZ}\" || true
-          echo \"TZ=${TZ}\" >> $GITHUB_ENV
-          echo \"BUILD_DATE=$(TZ=${TZ} date +%Y%m%d)\" >> $GITHUB_ENV
-          echo \"BUILD_TIME=$(TZ=${TZ} date +%H%M)\" >> $GITHUB_ENV
+          sudo timedatectl set-timezone "${TZ}" || true
+          echo "TZ=${TZ}" >> $GITHUB_ENV
+          echo "BUILD_DATE=$(TZ=${TZ} date +%Y%m%d)" >> $GITHUB_ENV
+          echo "BUILD_TIME=$(TZ=${TZ} date +%H%M)" >> $GITHUB_ENV
 
       - name: Set Build Variant (KSU / NonKSU)
         run: |
-          if [ \"${USE_KSU}\" = \"yes\" ]; then
-            echo \"VARIANT=KSU\" >> $GITHUB_ENV
+          if [ "${USE_KSU}" = "yes" ]; then
+            echo "VARIANT=KSU" >> $GITHUB_ENV
           else
-            echo \"VARIANT=NonKSU\" >> $GITHUB_ENV
+            echo "VARIANT=NonKSU" >> $GITHUB_ENV
           fi
 
+      # PATCH: tambah paket `lld` + `llvm` sebagai fallback linker/binutils
+      # sistem. Ini jaring pengaman kalau download toolchain custom
+      # (aosp-clang/neutron/proton) gagal -> tetap ada ld.lld yang valid,
+      # jadi tidak muncul error "ld.lld: not found".
       - name: Install Build Dependencies
         run: |
           sudo apt-get update -y
@@ -119,7 +122,8 @@ jobs:
             device-tree-compiler libarchive-tools p7zip-full unzip wget \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
             binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
-            libc6-dev-arm64-cross libc6-dev-armel-cross
+            libc6-dev-arm64-cross libc6-dev-armel-cross \
+            clang lld llvm
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -132,23 +136,23 @@ jobs:
       # ---------------------------------------------------------------
       - name: Clone Kernel Source
         run: |
-          echo \"==> Cloning kernel source...\"
+          echo "==> Cloning kernel source..."
           git clone --depth=1 --recurse-submodules \
-            -b \"${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}\" \
-            \"${{ github.event.inputs.KERNEL_SOURCE_URL }}\" kernel
+            -b "${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}" \
+            "${{ github.event.inputs.KERNEL_SOURCE_URL }}" kernel
           cd kernel
-          echo \"KERNEL_DIR=$(pwd)\" >> $GITHUB_ENV
+          echo "KERNEL_DIR=$(pwd)" >> $GITHUB_ENV
 
       - name: Detect Kernel Version
         run: |
-          cd \"${KERNEL_DIR}\"
+          cd "${KERNEL_DIR}"
           KV_MAJOR=$(grep -E '^VERSION\s*=' Makefile | head -1 | awk '{print $3}')
           KV_MINOR=$(grep -E '^PATCHLEVEL\s*=' Makefile | head -1 | awk '{print $3}')
           KV_SUB=$(grep -E '^SUBLEVEL\s*=' Makefile | head -1 | awk '{print $3}')
-          KERNEL_VERSION=\"${KV_MAJOR}.${KV_MINOR}\"
-          echo \"KERNEL_VERSION=${KERNEL_VERSION}\" >> $GITHUB_ENV
-          echo \"KERNEL_VERSION_FULL=${KV_MAJOR}.${KV_MINOR}.${KV_SUB}\" >> $GITHUB_ENV
-          echo \"==> Detected kernel version: ${KERNEL_VERSION_FULL:-${KERNEL_VERSION}}\"
+          KERNEL_VERSION="${KV_MAJOR}.${KV_MINOR}"
+          echo "KERNEL_VERSION=${KERNEL_VERSION}" >> $GITHUB_ENV
+          echo "KERNEL_VERSION_FULL=${KV_MAJOR}.${KV_MINOR}.${KV_SUB}" >> $GITHUB_ENV
+          echo "==> Detected kernel version: ${KERNEL_VERSION_FULL:-${KERNEL_VERSION}}"
 
       # ---------------------------------------------------------------
       # 3. Setup Toolchain (auto-detect terbaik per versi kernel)
@@ -156,120 +160,209 @@ jobs:
       - name: Resolve Toolchain
         id: resolve_tc
         run: |
-          CHOICE=\"${TOOLCHAIN_CHOICE}\"
-          KV=\"${KERNEL_VERSION}\"
+          CHOICE="${TOOLCHAIN_CHOICE}"
+          KV="${KERNEL_VERSION}"
 
-          if [ \"${CHOICE}\" = \"auto\" ]; then
-            case \"${KV}\" in
-              \"4.9\")
-                CHOICE=\"neutron-clang\"
+          if [ "${CHOICE}" = "auto" ]; then
+            case "${KV}" in
+              "4.9")
+                CHOICE="neutron-clang"
                 ;;
-              \"4.14\")
-                CHOICE=\"aosp-clang\"
+              "4.14")
+                CHOICE="aosp-clang"
                 ;;
-              \"4.19\")
-                CHOICE=\"aosp-clang\"
+              "4.19")
+                CHOICE="aosp-clang"
                 ;;
               *)
-                CHOICE=\"neutron-clang\"
+                CHOICE="neutron-clang"
                 ;;
             esac
           fi
 
-          echo \"==> Kernel ${KV} -> Toolchain: ${CHOICE}\"
-          echo \"TC_NAME=${CHOICE}\" >> $GITHUB_ENV
+          echo "==> Kernel ${KV} -> Toolchain: ${CHOICE}"
+          echo "TC_NAME=${CHOICE}" >> $GITHUB_ENV
 
       - name: Setup AOSP Clang + GCC (Google)
         if: env.TC_NAME == 'aosp-clang'
         run: |
           set -e
-          mkdir -p \"$HOME/toolchains/clang\" \"$HOME/toolchains/gcc64\" \"$HOME/toolchains/gcc32\"
+          mkdir -p "$HOME/toolchains/clang" "$HOME/toolchains/gcc64" "$HOME/toolchains/gcc32"
 
           # AOSP Clang version per kernel version (stabil, verified)
-          case \"${KERNEL_VERSION}\" in
-            \"4.19\")
-              CLANG_TAG=\"r487747c\"       # clang-r487747c (Android 14)
+          case "${KERNEL_VERSION}" in
+            "4.19")
+              CLANG_TAG="r487747c"       # clang-r487747c (Android 14)
               ;;
-            \"4.14\")
-              CLANG_TAG=\"r450784d\"       # clang-r450784d (Android 13)
+            "4.14")
+              CLANG_TAG="r450784d"       # clang-r450784d (Android 13)
               ;;
             *)
-              CLANG_TAG=\"r383902\"        # clang-r383902 (Android 11) untuk 4.9
+              CLANG_TAG="r383902"        # clang-r383902 (Android 11) untuk 4.9
               ;;
           esac
 
-          echo \"==> Downloading AOSP Clang ${CLANG_TAG}...\"
-          CLANG_URL=\"https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-${CLANG_TAG}.tar.gz\"
-          if ! curl -Lf --retry 3 -o /tmp/clang.tar.gz \"${CLANG_URL}\"; then
-            echo \"==> Fallback ke mirror kdrag0n/proton-clang untuk safety...\"
-            git clone --depth=1 https://github.com/kdrag0n/proton-clang \"$HOME/toolchains/clang\"
+          echo "==> Downloading AOSP Clang ${CLANG_TAG}..."
+          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-${CLANG_TAG}.tar.gz"
+          if ! curl -Lf --retry 3 -o /tmp/clang.tar.gz "${CLANG_URL}"; then
+            echo "==> Fallback ke mirror kdrag0n/proton-clang untuk safety..."
+            git clone --depth=1 https://github.com/kdrag0n/proton-clang "$HOME/toolchains/clang"
           else
-            tar -xzf /tmp/clang.tar.gz -C \"$HOME/toolchains/clang\"
+            tar -xzf /tmp/clang.tar.gz -C "$HOME/toolchains/clang"
           fi
 
-          # GCC 64-bit & 32-bit dari arter97 (stabil untuk kernel 4.9/4.14/4.19)
-          echo \"==> Downloading arter97 GCC (aarch64 + arm)...\"
-          git clone --depth=1 https://github.com/mvaisakh/gcc-arm64 \"$HOME/toolchains/gcc64\" \
-            || git clone --depth=1 https://github.com/arter97/arm64-gcc \"$HOME/toolchains/gcc64\"
-          git clone --depth=1 https://github.com/mvaisakh/gcc-arm \"$HOME/toolchains/gcc32\" \
-            || git clone --depth=1 https://github.com/arter97/arm32-gcc \"$HOME/toolchains/gcc32\"
+          # GCC 64-bit & 32-bit dari mvaisakh/arter97 (stabil untuk kernel 4.9/4.14/4.19)
+          echo "==> Downloading GCC (aarch64 + arm)..."
+          git clone --depth=1 https://github.com/mvaisakh/gcc-arm64 "$HOME/toolchains/gcc64" \
+            || git clone --depth=1 https://github.com/arter97/arm64-gcc "$HOME/toolchains/gcc64"
+          git clone --depth=1 https://github.com/mvaisakh/gcc-arm "$HOME/toolchains/gcc32" \
+            || git clone --depth=1 https://github.com/arter97/arm32-gcc "$HOME/toolchains/gcc32"
 
-          CLANG_BIN=\"$HOME/toolchains/clang/bin\"
-          GCC64_BIN=\"$HOME/toolchains/gcc64/bin\"
-          GCC32_BIN=\"$HOME/toolchains/gcc32/bin\"
+          CLANG_BIN="$HOME/toolchains/clang/bin"
+          GCC64_BIN="$HOME/toolchains/gcc64/bin"
+          GCC32_BIN="$HOME/toolchains/gcc32/bin"
 
-          echo \"PATH=${CLANG_BIN}:${GCC64_BIN}:${GCC32_BIN}:${PATH}\" >> $GITHUB_ENV
-          echo \"CLANG_BIN=${CLANG_BIN}\" >> $GITHUB_ENV
-          echo \"GCC64_BIN=${GCC64_BIN}\" >> $GITHUB_ENV
-          echo \"GCC32_BIN=${GCC32_BIN}\" >> $GITHUB_ENV
-          echo \"TC_LABEL=AOSP-Clang-${CLANG_TAG}\" >> $GITHUB_ENV
+          echo "PATH=${CLANG_BIN}:${GCC64_BIN}:${GCC32_BIN}:${PATH}" >> $GITHUB_ENV
+          echo "CLANG_BIN=${CLANG_BIN}" >> $GITHUB_ENV
+          echo "GCC64_BIN=${GCC64_BIN}" >> $GITHUB_ENV
+          echo "GCC32_BIN=${GCC32_BIN}" >> $GITHUB_ENV
+          echo "TC_LABEL=AOSP-Clang-${CLANG_TAG}" >> $GITHUB_ENV
 
       - name: Setup Neutron Clang
         if: env.TC_NAME == 'neutron-clang'
         run: |
           set -e
-          mkdir -p \"$HOME/toolchains/neutron\"
-          cd \"$HOME/toolchains/neutron\"
-          echo \"==> Downloading Neutron Clang via antman...\"
-          curl -LO \"https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman\"
+          mkdir -p "$HOME/toolchains/neutron"
+          cd "$HOME/toolchains/neutron"
+          echo "==> Downloading Neutron Clang via antman..."
+          curl -LO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
           chmod +x antman
           # Pilih versi Neutron yang cocok:
           # - 10052023 stabil untuk kernel 4.9/4.14
           # - latest untuk 4.19+
-          if [ \"${KERNEL_VERSION}\" = \"4.9\" ] || [ \"${KERNEL_VERSION}\" = \"4.14\" ]; then
+          if [ "${KERNEL_VERSION}" = "4.9" ] || [ "${KERNEL_VERSION}" = "4.14" ]; then
             ./antman -S=10052023 || ./antman -S
           else
             ./antman -S
           fi
           ./antman --patch=glibc || true
 
-          CLANG_BIN=\"$HOME/toolchains/neutron/bin\"
-          echo \"PATH=${CLANG_BIN}:${PATH}\" >> $GITHUB_ENV
-          echo \"CLANG_BIN=${CLANG_BIN}\" >> $GITHUB_ENV
-          echo \"GCC64_BIN=${CLANG_BIN}\" >> $GITHUB_ENV
-          echo \"GCC32_BIN=${CLANG_BIN}\" >> $GITHUB_ENV
-          echo \"TC_LABEL=Neutron-Clang\" >> $GITHUB_ENV
+          CLANG_BIN="$HOME/toolchains/neutron/bin"
+          echo "PATH=${CLANG_BIN}:${PATH}" >> $GITHUB_ENV
+          echo "CLANG_BIN=${CLANG_BIN}" >> $GITHUB_ENV
+          echo "GCC64_BIN=${CLANG_BIN}" >> $GITHUB_ENV
+          echo "GCC32_BIN=${CLANG_BIN}" >> $GITHUB_ENV
+          echo "TC_LABEL=Neutron-Clang" >> $GITHUB_ENV
 
       - name: Setup Proton Clang
         if: env.TC_NAME == 'proton-clang'
         run: |
           set -e
-          echo \"==> Cloning Proton Clang...\"
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang \"$HOME/toolchains/proton\"
+          echo "==> Cloning Proton Clang..."
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang "$HOME/toolchains/proton"
 
-          CLANG_BIN=\"$HOME/toolchains/proton/bin\"
-          echo \"PATH=${CLANG_BIN}:${PATH}\" >> $GITHUB_ENV
-          echo \"CLANG_BIN=${CLANG_BIN}\" >> $GITHUB_ENV
-          echo \"GCC64_BIN=${CLANG_BIN}\" >> $GITHUB_ENV
-          echo \"GCC32_BIN=${CLANG_BIN}\" >> $GITHUB_ENV
-          echo \"TC_LABEL=Proton-Clang\" >> $GITHUB_ENV
+          CLANG_BIN="$HOME/toolchains/proton/bin"
+          echo "PATH=${CLANG_BIN}:${PATH}" >> $GITHUB_ENV
+          echo "CLANG_BIN=${CLANG_BIN}" >> $GITHUB_ENV
+          echo "GCC64_BIN=${CLANG_BIN}" >> $GITHUB_ENV
+          echo "GCC32_BIN=${CLANG_BIN}" >> $GITHUB_ENV
+          echo "TC_LABEL=Proton-Clang" >> $GITHUB_ENV
 
+      # PATCH (root cause fix #1 - ld not found / stack protector / vdso):
+      # Sebelumnya CROSS_COMPILE prefix di-detect dinamis (aarch64-linux-android-,
+      # aarch64-elf-, atau aarch64-linux-gnu-) tapi CLANG_TRIPLE di-hardcode
+      # "aarch64-linux-gnu-". Kalau prefix yang kepilih BUKAN aarch64-linux-gnu-,
+      # target triple Clang jadi tidak sinkron dengan GCC/binutils yang dipakai.
+      # Clang lalu gagal menemukan crtbegin.o/libgcc/ld untuk target yang benar,
+      # yang muncul sebagai "ld not found", "-fstack-protector-strong not
+      # supported by compiler", dan error saat build arch/arm64/kernel/vdso
+      # (vdso pakai jalur cc-option/GCC_TOOLCHAIN yang sama).
+      # Fix: deteksi prefix SEKALI di sini, lalu set CLANG_TRIPLE = prefix yang
+      # sama persis. Semua step build di bawah pakai env ini, tidak
+      # mendeteksi ulang secara terpisah (menghindari drift).
+      - name: Resolve Cross-Compile Prefix & Clang Triple
+        run: |
+          set -e
+
+          find_prefix () {
+            local bindir="$1"
+            for p in aarch64-linux-android- aarch64-elf- aarch64-linux-gnu-; do
+              if [ -x "${bindir}/${p}ld" ] || [ -x "${bindir}/${p}elfedit" ]; then
+                echo "${p}"
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          find_prefix32 () {
+            local bindir="$1"
+            for p in arm-linux-androideabi- arm-eabi- arm-linux-gnueabi-; do
+              if [ -x "${bindir}/${p}ld" ] || [ -x "${bindir}/${p}elfedit" ]; then
+                echo "${p}"
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          CC_AARCH64="$(find_prefix "${GCC64_BIN}" || true)"
+          CC_ARM32="$(find_prefix32 "${GCC32_BIN}" || true)"
+
+          # Fallback: pakai cross-toolchain apt yang sudah pasti terpasang
+          # di step "Install Build Dependencies" di atas.
+          if [ -z "${CC_AARCH64}" ]; then
+            echo "==> Prefix aarch64 tidak ketemu di ${GCC64_BIN}, pakai fallback apt aarch64-linux-gnu-"
+            CC_AARCH64="aarch64-linux-gnu-"
+          fi
+          if [ -z "${CC_ARM32}" ]; then
+            echo "==> Prefix arm32 tidak ketemu di ${GCC32_BIN}, pakai fallback apt arm-linux-gnueabi-"
+            CC_ARM32="arm-linux-gnueabi-"
+          fi
+
+          echo "==> CROSS_COMPILE (aarch64) = ${CC_AARCH64}"
+          echo "==> CROSS_COMPILE_ARM32     = ${CC_ARM32}"
+          echo "==> CLANG_TRIPLE disamakan dengan CROSS_COMPILE agar tidak mismatch"
+
+          echo "CC_AARCH64=${CC_AARCH64}" >> $GITHUB_ENV
+          echo "CC_ARM32=${CC_ARM32}" >> $GITHUB_ENV
+          echo "CLANG_TRIPLE=${CC_AARCH64}" >> $GITHUB_ENV
+
+      # PATCH (root cause fix #2 - fail fast, bukan error samar di tengah build):
+      # Sebelumnya step ini cuma `which ... || true`, jadi kalau toolchain
+      # benar-benar tidak lengkap, build tetap jalan dan baru gagal ratusan
+      # baris log kemudian dengan pesan error yang membingungkan. Sekarang
+      # step ini WAJIB lolos semua pengecekan, kalau tidak job langsung
+      # berhenti dengan pesan yang jelas.
       - name: Verify Toolchain
         run: |
-          which clang || true
-          clang --version || true
-          which aarch64-linux-gnu-ld || which ld.lld || true
-          ld.lld --version || true
+          set -e
+          echo "== clang =="
+          command -v clang
+          clang --version
+
+          echo "== ld.lld =="
+          if ! command -v ld.lld >/dev/null 2>&1; then
+            echo "::error::ld.lld tidak ditemukan di PATH. Toolchain (${TC_LABEL}) kemungkinan gagal terdownload/terpasang, atau paket 'lld' gagal terinstall."
+            exit 1
+          fi
+          ld.lld --version
+
+          echo "== cross toolchain (${CC_AARCH64}) =="
+          if ! command -v "${CC_AARCH64}elfedit" >/dev/null 2>&1 && ! command -v "${CC_AARCH64}ld" >/dev/null 2>&1; then
+            echo "::error::Cross toolchain dengan prefix '${CC_AARCH64}' tidak ditemukan di PATH."
+            exit 1
+          fi
+
+          echo "== quick stack-protector sanity check =="
+          echo 'int main(void) { return 0; }' > /tmp/sp_test.c
+          if ! clang --target="$(echo ${CC_AARCH64} | sed 's/-$//')" -fstack-protector-strong -c /tmp/sp_test.c -o /tmp/sp_test.o 2>/tmp/sp_test.log; then
+            echo "==> -fstack-protector-strong tidak didukung kombinasi clang+cross-toolchain ini."
+            echo "SP_STRONG_UNSUPPORTED=1" >> $GITHUB_ENV
+            cat /tmp/sp_test.log || true
+          else
+            echo "SP_STRONG_UNSUPPORTED=0" >> $GITHUB_ENV
+          fi
 
       # ---------------------------------------------------------------
       # 4. Apply KernelSU-Next Patch (Official)
@@ -278,31 +371,47 @@ jobs:
         if: env.USE_KSU == 'yes'
         run: |
           set -e
-          cd \"${KERNEL_DIR}\"
-          echo \"==> Applying Official KernelSU-Next...\"
-          # Bersihkan direktori KernelSU lama jika ada
+          cd "${KERNEL_DIR}"
+          echo "==> Applying Official KernelSU-Next..."
           rm -rf KernelSU KernelSU-Next drivers/kernelsu
-          curl -LSs \"https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh\" | bash -s next
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
 
-          # Pastikan Kconfig & Makefile drivers include KernelSU (idempotent)
-          if [ -f drivers/Kconfig ] && ! grep -q \"kernelsu\" drivers/Kconfig; then
-            sed -i '/endmenu/i source \"drivers/kernelsu/Kconfig\"' drivers/Kconfig || true
+          if [ -f drivers/Kconfig ] && ! grep -q "kernelsu" drivers/Kconfig; then
+            sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig || true
           fi
-          if [ -f drivers/Makefile ] && ! grep -q \"kernelsu\" drivers/Makefile; then
+          if [ -f drivers/Makefile ] && ! grep -q "kernelsu" drivers/Makefile; then
             echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           fi
 
-          # Enable KSU pada defconfig
-          DEFCONFIG_PATH=\"arch/${ARCH}/configs/${DEFCONFIG}\"
-          if [ -f \"${DEFCONFIG_PATH}\" ]; then
-            sed -i '/CONFIG_KSU/d' \"${DEFCONFIG_PATH}\"
+          DEFCONFIG_PATH="arch/${ARCH}/configs/${DEFCONFIG}"
+          if [ -f "${DEFCONFIG_PATH}" ]; then
+            sed -i '/CONFIG_KSU/d' "${DEFCONFIG_PATH}"
             {
-              echo \"CONFIG_KSU=y\"
-              echo \"CONFIG_KSU_SUSFS=n\"
-              echo \"CONFIG_KPROBES=y\"
-              echo \"CONFIG_HAVE_KPROBES=y\"
-              echo \"CONFIG_KPROBE_EVENTS=y\"
-            } >> \"${DEFCONFIG_PATH}\"
+              echo "CONFIG_KSU=y"
+              echo "CONFIG_KSU_SUSFS=n"
+              echo "CONFIG_KPROBES=y"
+              echo "CONFIG_HAVE_KPROBES=y"
+              echo "CONFIG_KPROBE_EVENTS=y"
+            } >> "${DEFCONFIG_PATH}"
+          fi
+
+      # PATCH (root cause fix #3 - stack protector di level defconfig):
+      # Kalau dari sanity check di atas ketauan -fstack-protector-strong
+      # tidak didukung kombinasi toolchain ini, defconfig kita downgrade
+      # otomatis ke CONFIG_CC_STACKPROTECTOR_REGULAR supaya tidak kena
+      # error "Cannot use CONFIG_CC_STACKPROTECTOR_STRONG: ... not
+      # supported by compiler" (error umum kernel lama + clang/gcc baru).
+      - name: Patch Stack-Protector Config (jika perlu)
+        if: env.SP_STRONG_UNSUPPORTED == '1'
+        run: |
+          cd "${KERNEL_DIR}"
+          DEFCONFIG_PATH="arch/${ARCH}/configs/${DEFCONFIG}"
+          if [ -f "${DEFCONFIG_PATH}" ]; then
+            echo "==> Downgrade stack protector ke REGULAR pada ${DEFCONFIG_PATH}"
+            sed -i '/CONFIG_CC_STACKPROTECTOR_STRONG/d' "${DEFCONFIG_PATH}"
+            {
+              echo "CONFIG_CC_STACKPROTECTOR_REGULAR=y"
+            } >> "${DEFCONFIG_PATH}"
           fi
 
       # ---------------------------------------------------------------
@@ -310,65 +419,38 @@ jobs:
       # ---------------------------------------------------------------
       - name: Prepare Build Flags
         run: |
-          cd \"${KERNEL_DIR}\"
+          cd "${KERNEL_DIR}"
 
           # Nonaktifkan werror global untuk hindari failure di kernel lama
-          export KCFLAGS=\"-Wno-error\"
-          echo \"KCFLAGS=-Wno-error\" >> $GITHUB_ENV
-
-          # Untuk mencegah stack protector error di kernel 4.9/4.14 saat cross-compile
-          # kernel butuh gcc dengan -fstack-protector-strong support. AOSP GCC/arter97 sudah cukup.
-          # vDSO error umumnya karena clang triple salah -> kita set CLANG_TRIPLE eksplisit.
-
-          echo \"MAKE_ARGS_BASE=ARCH=${ARCH} SUBARCH=${SUBARCH} O=out\" >> $GITHUB_ENV
+          echo "KCFLAGS=-Wno-error" >> $GITHUB_ENV
+          echo "MAKE_ARGS_BASE=ARCH=${ARCH} SUBARCH=${SUBARCH} O=out" >> $GITHUB_ENV
 
       # ---------------------------------------------------------------
       # 6. Build Kernel
       # ---------------------------------------------------------------
       - name: Make Defconfig
         run: |
-          cd \"${KERNEL_DIR}\"
-          make ${MAKE_ARGS_BASE} \"${DEFCONFIG}\"
+          cd "${KERNEL_DIR}"
+          make ${MAKE_ARGS_BASE} "${DEFCONFIG}"
 
+      # PATCH: CROSS_COMPILE / CROSS_COMPILE_ARM32 / CLANG_TRIPLE sekarang
+      # dipakai langsung dari env yang di-resolve satu kali di step
+      # "Resolve Cross-Compile Prefix & Clang Triple" (tidak deteksi ulang
+      # di sini). Ini menghilangkan kemungkinan drift/mismatch yang jadi
+      # akar dari error ld not found / stack protector / vdso.
       - name: Build Kernel Image
         id: build_kernel
         run: |
           set -e
-          cd \"${KERNEL_DIR}\"
+          cd "${KERNEL_DIR}"
 
           THREADS=$(nproc --all)
-          echo \"==> Building with ${THREADS} threads using ${TC_LABEL}\"
+          echo "==> Building with ${THREADS} threads using ${TC_LABEL}"
+          echo "==> CROSS_COMPILE=${CC_AARCH64}  CROSS_COMPILE_ARM32=${CC_ARM32}  CLANG_TRIPLE=${CLANG_TRIPLE}"
 
-          # Set up compiler args berdasarkan toolchain
-          COMMON_ARGS=\"ARCH=${ARCH} SUBARCH=${SUBARCH} O=out \
+          make -j${THREADS} ARCH=${ARCH} SUBARCH=${SUBARCH} O=out \
             KBUILD_BUILD_USER=${KBUILD_BUILD_USER} \
-            KBUILD_BUILD_HOST=${KBUILD_BUILD_HOST}\"
-
-          # Cari prefix cross compile yang tersedia (hindari error 404 toolchain)
-          if [ -x \"${GCC64_BIN}/aarch64-linux-android-ld\" ]; then
-            CC_AARCH64=\"aarch64-linux-android-\"
-          elif [ -x \"${GCC64_BIN}/aarch64-elf-ld\" ]; then
-            CC_AARCH64=\"aarch64-elf-\"
-          elif [ -x \"${GCC64_BIN}/aarch64-linux-gnu-ld\" ]; then
-            CC_AARCH64=\"aarch64-linux-gnu-\"
-          else
-            CC_AARCH64=\"aarch64-linux-gnu-\"
-          fi
-
-          if [ -x \"${GCC32_BIN}/arm-linux-androideabi-ld\" ]; then
-            CC_ARM32=\"arm-linux-androideabi-\"
-          elif [ -x \"${GCC32_BIN}/arm-eabi-ld\" ]; then
-            CC_ARM32=\"arm-eabi-\"
-          elif [ -x \"${GCC32_BIN}/arm-linux-gnueabi-ld\" ]; then
-            CC_ARM32=\"arm-linux-gnueabi-\"
-          else
-            CC_ARM32=\"arm-linux-gnueabi-\"
-          fi
-
-          echo \"==> CROSS_COMPILE=${CC_AARCH64}\"
-          echo \"==> CROSS_COMPILE_ARM32=${CC_ARM32}\"
-
-          make -j${THREADS} ${COMMON_ARGS} \
+            KBUILD_BUILD_HOST=${KBUILD_BUILD_HOST} \
             CC=clang \
             LD=ld.lld \
             AR=llvm-ar \
@@ -381,82 +463,78 @@ jobs:
             HOSTCXX=clang++ \
             HOSTAR=llvm-ar \
             HOSTLD=ld.lld \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=\"${CC_AARCH64}\" \
-            CROSS_COMPILE_ARM32=\"${CC_ARM32}\" \
-            CROSS_COMPILE_COMPAT=\"${CC_ARM32}\" \
+            CLANG_TRIPLE="${CLANG_TRIPLE}" \
+            CROSS_COMPILE="${CC_AARCH64}" \
+            CROSS_COMPILE_ARM32="${CC_ARM32}" \
+            CROSS_COMPILE_COMPAT="${CC_ARM32}" \
             LLVM=1 LLVM_IAS=1 \
-            KCFLAGS=\"${KCFLAGS}\" \
+            KCFLAGS="${KCFLAGS}" \
             2>&1 | tee build.log
 
-          # Verifikasi output
-          OUT_DIR=\"${KERNEL_DIR}/out/arch/${ARCH}/boot\"
-          if [ -f \"${OUT_DIR}/Image.gz-dtb\" ]; then
-            KERNEL_IMG=\"${OUT_DIR}/Image.gz-dtb\"
-          elif [ -f \"${OUT_DIR}/Image.gz\" ]; then
-            KERNEL_IMG=\"${OUT_DIR}/Image.gz\"
-          elif [ -f \"${OUT_DIR}/Image-dtb\" ]; then
-            KERNEL_IMG=\"${OUT_DIR}/Image-dtb\"
-          elif [ -f \"${OUT_DIR}/Image\" ]; then
-            KERNEL_IMG=\"${OUT_DIR}/Image\"
+          OUT_DIR="${KERNEL_DIR}/out/arch/${ARCH}/boot"
+          if [ -f "${OUT_DIR}/Image.gz-dtb" ]; then
+            KERNEL_IMG="${OUT_DIR}/Image.gz-dtb"
+          elif [ -f "${OUT_DIR}/Image.gz" ]; then
+            KERNEL_IMG="${OUT_DIR}/Image.gz"
+          elif [ -f "${OUT_DIR}/Image-dtb" ]; then
+            KERNEL_IMG="${OUT_DIR}/Image-dtb"
+          elif [ -f "${OUT_DIR}/Image" ]; then
+            KERNEL_IMG="${OUT_DIR}/Image"
           else
-            echo \"::error::Kernel image tidak ditemukan di ${OUT_DIR}\"
-            ls -la \"${OUT_DIR}\" || true
+            echo "::error::Kernel image tidak ditemukan di ${OUT_DIR}"
+            ls -la "${OUT_DIR}" || true
             exit 1
           fi
 
-          echo \"KERNEL_IMG=${KERNEL_IMG}\" >> $GITHUB_ENV
-          echo \"OUT_DIR=${OUT_DIR}\" >> $GITHUB_ENV
-          echo \"==> Kernel image: ${KERNEL_IMG}\"
+          echo "KERNEL_IMG=${KERNEL_IMG}" >> $GITHUB_ENV
+          echo "OUT_DIR=${OUT_DIR}" >> $GITHUB_ENV
+          echo "==> Kernel image: ${KERNEL_IMG}"
 
       # ---------------------------------------------------------------
       # 7. Package dengan AnyKernel3 (jika enable)
       # ---------------------------------------------------------------
       - name: Set Output Filename
         run: |
-          ZIP_NAME=\"${KERNEL_NAME}-${DEVICE_CODENAME}-${VARIANT}-${BUILD_DATE}.zip\"
-          echo \"ZIP_NAME=${ZIP_NAME}\" >> $GITHUB_ENV
-          echo \"==> Output filename: ${ZIP_NAME}\"
+          ZIP_NAME="${KERNEL_NAME}-${DEVICE_CODENAME}-${VARIANT}-${BUILD_DATE}.zip"
+          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+          echo "==> Output filename: ${ZIP_NAME}"
 
       - name: Package with AnyKernel3
         if: env.USE_AK3 == 'yes'
         run: |
           set -e
-          cd \"$GITHUB_WORKSPACE\"
-          echo \"==> Cloning AnyKernel3: ${AK3_URL} (${AK3_BRANCH})\"
-          git clone --depth=1 -b \"${AK3_BRANCH}\" \"${AK3_URL}\" AnyKernel3
+          cd "$GITHUB_WORKSPACE"
+          echo "==> Cloning AnyKernel3: ${AK3_URL} (${AK3_BRANCH})"
+          git clone --depth=1 -b "${AK3_BRANCH}" "${AK3_URL}" AnyKernel3
 
-          # Salin kernel image ke root AnyKernel3
-          cp \"${KERNEL_IMG}\" AnyKernel3/
+          cp "${KERNEL_IMG}" AnyKernel3/
 
-          # Salin dtbo jika ada
-          if [ -f \"${OUT_DIR}/dtbo.img\" ]; then
-            cp \"${OUT_DIR}/dtbo.img\" AnyKernel3/
+          if [ -f "${OUT_DIR}/dtbo.img" ]; then
+            cp "${OUT_DIR}/dtbo.img" AnyKernel3/
           fi
-          # Salin dtb jika ada
-          if [ -f \"${OUT_DIR}/dtb.img\" ]; then
-            cp \"${OUT_DIR}/dtb.img\" AnyKernel3/
+          if [ -f "${OUT_DIR}/dtb.img" ]; then
+            cp "${OUT_DIR}/dtb.img" AnyKernel3/
           fi
 
           cd AnyKernel3
           rm -rf .git .github README.md
-          zip -r9 \"../${ZIP_NAME}\" ./*
+          zip -r9 "../${ZIP_NAME}" ./*
           cd ..
-          echo \"ZIP_PATH=$GITHUB_WORKSPACE/${ZIP_NAME}\" >> $GITHUB_ENV
+          echo "ZIP_PATH=$GITHUB_WORKSPACE/${ZIP_NAME}" >> $GITHUB_ENV
 
       - name: Package Raw Image (tanpa AnyKernel3)
         if: env.USE_AK3 == 'no'
         run: |
           set -e
-          cd \"$GITHUB_WORKSPACE\"
+          cd "$GITHUB_WORKSPACE"
           mkdir -p raw_output
-          cp \"${KERNEL_IMG}\" raw_output/
-          [ -f \"${OUT_DIR}/dtbo.img\" ] && cp \"${OUT_DIR}/dtbo.img\" raw_output/ || true
-          [ -f \"${OUT_DIR}/dtb.img\" ] && cp \"${OUT_DIR}/dtb.img\" raw_output/ || true
+          cp "${KERNEL_IMG}" raw_output/
+          [ -f "${OUT_DIR}/dtbo.img" ] && cp "${OUT_DIR}/dtbo.img" raw_output/ || true
+          [ -f "${OUT_DIR}/dtb.img" ] && cp "${OUT_DIR}/dtb.img" raw_output/ || true
           cd raw_output
-          zip -r9 \"../${ZIP_NAME}\" ./*
+          zip -r9 "../${ZIP_NAME}" ./*
           cd ..
-          echo \"ZIP_PATH=$GITHUB_WORKSPACE/${ZIP_NAME}\" >> $GITHUB_ENV
+          echo "ZIP_PATH=$GITHUB_WORKSPACE/${ZIP_NAME}" >> $GITHUB_ENV
 
       # ---------------------------------------------------------------
       # 8. Upload Artifact + Release
@@ -496,4 +574,10 @@ jobs:
             | KBuild User | `${{ env.KBUILD_BUILD_USER }}` |
             | Build Date | `${{ env.BUILD_DATE }} ${{ env.BUILD_TIME }} (${{ env.TZ }})` |
 
-  
+            Built via GitHub Actions.
+          files: ${{ env.ZIP_PATH }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
