@@ -108,7 +108,7 @@ jobs:
           fi
 
       - name: 📤 Upload Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: Kernel-Build
           path: kernel/out/arch/arm64/boot/*.zip
