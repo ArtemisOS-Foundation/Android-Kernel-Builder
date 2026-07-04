@@ -1,0 +1,259 @@
+name: Build Android Kernel with vDSO compat & KSUN
+
+on:
+  workflow_dispatch:
+    inputs:
+      KERNEL_SOURCE:
+        description: 'Kernel Source URL (e.g. https://github.com/username/kernel-mido)'
+        required: true
+        type: string
+      KERNEL_BRANCH:
+        description: 'Kernel Branch (e.g. msm-4.9)'
+        required: true
+        type: string
+      KERNEL_DEFCONFIG:
+        description: 'Kernel Defconfig (e.g. mido_defconfig)'
+        required: true
+        type: string
+      DEVICE_CODENAME:
+        description: 'Device Codename (e.g. mido)'
+        required: true
+        type: string
+      KERNEL_VERSION:
+        description: 'Kernel Version (e.g. 4.9.337)'
+        required: true
+        type: string
+      KERNEL_NAME:
+        description: 'Kernel Name (e.g. MyKernel)'
+        required: true
+        type: string
+      KBUILD_USER:
+        description: 'KBUILD User Name'
+        required: true
+        type: string
+      ENABLE_KERNELSU_NEXT:
+        description: 'Enable KernelSU-Next? (true/false)'
+        required: true
+        type: string
+        default: 'false'
+      ENABLE_OVERLAYFS:
+        description: 'Enable OverlayFS? (true/false)'
+        required: true
+        type: string
+        default: 'false'
+      USE_ANYKERNEL:
+        description: 'Use AnyKernel3? (true/false)'
+        required: true
+        type: string
+        default: 'false'
+      ANYKERNEL_SOURCE:
+        description: 'AnyKernel3 Source URL (required if USE_ANYKERNEL=true)'
+        required: false
+        type: string
+      ANYKERNEL_BRANCH:
+        description: 'AnyKernel3 Branch (required if USE_ANYKERNEL=true)'
+        required: false
+        type: string
+        default: 'master'
+
+env:
+  TZ: Asia/Jakarta
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Parse Kernel Source URL
+        id: parse_kernel
+        run: |
+          KERNEL_URL="${{ github.event.inputs.KERNEL_SOURCE }}"
+          KERNEL_REPO=$(echo "$KERNEL_URL" | sed 's|https://github.com/||' | sed 's|http://github.com/||' | sed 's|github.com/||' | sed 's|\.git$||')
+          echo "kernel_repo=$KERNEL_REPO" >> $GITHUB_OUTPUT
+          echo "Parsed kernel repo: $KERNEL_REPO"
+
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.parse_kernel.outputs.kernel_repo }}
+          ref: ${{ github.event.inputs.KERNEL_BRANCH }}
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Setup Build Environment
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y bc bison build-essential ccache curl flex             g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses-dev             lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libncurses5-dev             libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync             schedtool squashfs-tools xsltproc zip zlib1g-dev libncurses5             python3 python3-pip
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ github.event.inputs.DEVICE_CODENAME }}-${{ github.event.inputs.KERNEL_VERSION }}
+          max-size: 2G
+
+      - name: Setup KernelSU-Next
+        if: github.event.inputs.ENABLE_KERNELSU_NEXT == 'true'
+        run: |
+          echo "Setting up KernelSU-Next..."
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+          echo "KernelSU-Next setup complete!"
+
+          # Verify KernelSU-Next was integrated
+          if [ -d "KernelSU-Next" ] || [ -d "KernelSU" ]; then
+            echo "KernelSU-Next directory found!"
+            ls -la KernelSU-Next 2>/dev/null || ls -la KernelSU 2>/dev/null
+          else
+            echo "WARNING: KernelSU-Next directory not found after setup"
+          fi
+
+      - name: Enable OverlayFS in Defconfig
+        if: github.event.inputs.ENABLE_OVERLAYFS == 'true'
+        run: |
+          echo "Enabling OverlayFS in defconfig..."
+
+          # Add OverlayFS configs to the defconfig
+          cat << 'EOF' >> arch/arm64/configs/${{ github.event.inputs.KERNEL_DEFCONFIG }}
+
+          # OverlayFS Support
+          CONFIG_OVERLAY_FS=y
+          CONFIG_OVERLAY_FS_REDIRECT_DIR=y
+          CONFIG_OVERLAY_FS_REDIRECT_ALWAYS_FOLLOW=y
+          CONFIG_OVERLAY_FS_INDEX=y
+          CONFIG_OVERLAY_FS_XATTR=y
+          CONFIG_OVERLAY_FS_METACOPY=y
+          EOF
+
+          echo "OverlayFS configs added to defconfig"
+
+      - name: Download AOSP Clang Toolchain
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/toolchain
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android-11.0.0_r28 $GITHUB_WORKSPACE/toolchain/clang
+
+          # Download AOSP GCC for cross-compilation
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-11.0.0_r28 $GITHUB_WORKSPACE/toolchain/gcc64
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android-11.0.0_r28 $GITHUB_WORKSPACE/toolchain/gcc32
+
+      - name: Setup Environment Variables
+        run: |
+          echo "ARCH=arm64" >> $GITHUB_ENV
+          echo "SUBARCH=arm64" >> $GITHUB_ENV
+          echo "KBUILD_BUILD_USER=${{ github.event.inputs.KBUILD_USER }}" >> $GITHUB_ENV
+          echo "KBUILD_BUILD_HOST=GitHub-Actions" >> $GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/toolchain/clang/clang-r383902b/bin:$GITHUB_WORKSPACE/toolchain/gcc64/bin:$GITHUB_WORKSPACE/toolchain/gcc32/bin:$PATH" >> $GITHUB_ENV
+          echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
+          echo "CCACHE_EXEC=/usr/bin/ccache" >> $GITHUB_ENV
+
+      - name: Generate Defconfig
+        run: |
+          make O=out ARCH=arm64 ${{ github.event.inputs.KERNEL_DEFCONFIG }}
+
+      - name: Build Kernel
+        run: |
+          make -j$(nproc --all) O=out             ARCH=arm64             CC="ccache clang"             CLANG_TRIPLE=aarch64-linux-gnu-             CROSS_COMPILE=aarch64-linux-android-             CROSS_COMPILE_ARM32=arm-linux-androideabi-             AR=llvm-ar             NM=llvm-nm             OBJCOPY=llvm-objcopy             OBJDUMP=llvm-objdump             STRIP=llvm-strip             LD=ld.lld
+
+      - name: Check Build Output
+        run: |
+          ls -la out/arch/arm64/boot/
+          file out/arch/arm64/boot/Image.gz-dtb 2>/dev/null || file out/arch/arm64/boot/Image.gz 2>/dev/null || file out/arch/arm64/boot/Image 2>/dev/null
+
+      - name: Prepare Kernel Image
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/artifacts
+
+          if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+            cp out/arch/arm64/boot/Image.gz-dtb $GITHUB_WORKSPACE/artifacts/kernel
+          elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
+            cp out/arch/arm64/boot/Image.gz $GITHUB_WORKSPACE/artifacts/kernel
+          elif [ -f "out/arch/arm64/boot/Image" ]; then
+            cp out/arch/arm64/boot/Image $GITHUB_WORKSPACE/artifacts/kernel
+          else
+            echo "ERROR: No kernel image found!"
+            exit 1
+          fi
+
+      - name: Parse AnyKernel Source URL
+        if: github.event.inputs.USE_ANYKERNEL == 'true'
+        id: parse_anykernel
+        run: |
+          AK_URL="${{ github.event.inputs.ANYKERNEL_SOURCE }}"
+          AK_REPO=$(echo "$AK_URL" | sed 's|https://github.com/||' | sed 's|http://github.com/||' | sed 's|github.com/||' | sed 's|\.git$||')
+          echo "ak_repo=$AK_REPO" >> $GITHUB_OUTPUT
+          echo "Parsed AnyKernel repo: $AK_REPO"
+
+      - name: Clone AnyKernel3 (if enabled)
+        if: github.event.inputs.USE_ANYKERNEL == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.parse_anykernel.outputs.ak_repo }}
+          ref: ${{ github.event.inputs.ANYKERNEL_BRANCH }}
+          path: anykernel
+          fetch-depth: 1
+
+      - name: Setup AnyKernel3 Package
+        if: github.event.inputs.USE_ANYKERNEL == 'true'
+        run: |
+          # Copy kernel image to AnyKernel3
+          cp $GITHUB_WORKSPACE/artifacts/kernel $GITHUB_WORKSPACE/anykernel/
+
+          # Optional: copy dtb/dtbo if exists
+          if [ -d "out/arch/arm64/boot/dts" ]; then
+            find out/arch/arm64/boot/dts -name "*.dtb" -exec cp {} $GITHUB_WORKSPACE/anykernel/ \;
+          fi
+          if [ -f "out/arch/arm64/boot/dtbo.img" ]; then
+            cp out/arch/arm64/boot/dtbo.img $GITHUB_WORKSPACE/anykernel/
+          fi
+
+      - name: Create Flashable ZIP (AnyKernel3)
+        if: github.event.inputs.USE_ANYKERNEL == 'true'
+        run: |
+          cd $GITHUB_WORKSPACE/anykernel
+
+          # Update anykernel.sh with device info
+          sed -i "s/device.name1=.*/device.name1=${{ github.event.inputs.DEVICE_CODENAME }}/g" anykernel.sh 2>/dev/null || true
+          sed -i "s/kernel.string=.*/kernel.string=${{ github.event.inputs.KERNEL_NAME }} ${{ github.event.inputs.KERNEL_VERSION }}/g" anykernel.sh 2>/dev/null || true
+
+          # Create zip
+          DATE=$(date +%Y%m%d)
+          ZIP_NAME="${{ github.event.inputs.KERNEL_NAME }}-${{ github.event.inputs.KERNEL_VERSION }}-${{ github.event.inputs.DEVICE_CODENAME }}-${DATE}.zip"
+
+          zip -r9 "$GITHUB_WORKSPACE/artifacts/$ZIP_NAME" . -x ".git*" "README*" "LICENSE*"
+
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+
+      - name: Create Raw Kernel ZIP (No AnyKernel3)
+        if: github.event.inputs.USE_ANYKERNEL != 'true'
+        run: |
+          cd $GITHUB_WORKSPACE/artifacts
+          DATE=$(date +%Y%m%d)
+          ZIP_NAME="${{ github.event.inputs.KERNEL_NAME }}-${{ github.event.inputs.KERNEL_VERSION }}-${{ github.event.inputs.DEVICE_CODENAME }}-${DATE}.zip"
+
+          zip -r9 "$ZIP_NAME" kernel
+
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: $GITHUB_WORKSPACE/artifacts/${{ env.ZIP_NAME }}
+          if-no-files-found: error
+
+      - name: Build Summary
+        run: |
+          echo "========================================"
+          echo "  BUILD COMPLETED SUCCESSFULLY!"
+          echo "========================================"
+          echo "Kernel Name:      ${{ github.event.inputs.KERNEL_NAME }}"
+          echo "Kernel Version:   ${{ github.event.inputs.KERNEL_VERSION }}"
+          echo "Device:           ${{ github.event.inputs.DEVICE_CODENAME }}"
+          echo "Defconfig:        ${{ github.event.inputs.KERNEL_DEFCONFIG }}"
+          echo "Branch:           ${{ github.event.inputs.KERNEL_BRANCH }}"
+          echo "KBUILD User:      ${{ github.event.inputs.KBUILD_USER }}"
+          echo "KernelSU-Next:    ${{ github.event.inputs.ENABLE_KERNELSU_NEXT }}"
+          echo "OverlayFS:        ${{ github.event.inputs.ENABLE_OVERLAYFS }}"
+          echo "AnyKernel3:       ${{ github.event.inputs.USE_ANYKERNEL }}"
+          echo "Output:           ${{ env.ZIP_NAME }}"
+          echo "========================================"
+          
