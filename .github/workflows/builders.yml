@@ -194,7 +194,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ZIP_NAME }}
-          path: $GITHUB_WORKSPACE/artifacts/${{ env.ZIP_NAME }}
+          path: artifacts/${{ env.ZIP_NAME }}
           if-no-files-found: error
 
       - name: Build Summary
