@@ -1,0 +1,182 @@
+name: Android Kernel Builder (KernelSU-Next Release)
+
+on:
+  workflow_dispatch:
+    inputs:
+      KERNEL_SOURCE:
+        description: "Kernel Source URL"
+        required: true
+        type: string
+
+      KERNEL_BRANCH:
+        description: "Kernel Branch"
+        required: true
+        type: string
+
+      KERNEL_DEFCONFIG:
+        description: "Defconfig"
+        required: true
+        type: string
+
+      DEVICE_CODENAME:
+        description: "Device Codename"
+        required: true
+        type: string
+
+      KERNEL_VERSION:
+        description: "Kernel Version"
+        required: true
+        type: string
+
+      KERNEL_NAME:
+        description: "Kernel Name"
+        required: true
+        type: string
+
+      KBUILD_USER:
+        description: "KBUILD User"
+        required: true
+        type: string
+
+env:
+  TZ: Asia/Jakarta
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      # =========================
+      # PARSE REPO
+      # =========================
+      - name: Parse Kernel Source
+        id: parse
+        run: |
+          REPO=$(echo "${{ inputs.KERNEL_SOURCE }}" | sed 's|https://github.com/||' | sed 's|.git||')
+          echo "repo=$REPO" >> $GITHUB_OUTPUT
+
+      # =========================
+      # CHECKOUT
+      # =========================
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.parse.outputs.repo }}
+          ref: ${{ inputs.KERNEL_BRANCH }}
+          submodules: recursive
+
+      # =========================
+      # DEPENDENCIES
+      # =========================
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y bc bison build-essential ccache curl flex \
+          git gcc-multilib g++-multilib libssl-dev libelf-dev zip python3
+
+      # =========================
+      # TOOLCHAIN
+      # =========================
+      - name: Setup Toolchain
+        run: |
+          mkdir -p toolchain
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 toolchain/clang
+
+          echo "ARCH=arm64" >> $GITHUB_ENV
+          echo "SUBARCH=arm64" >> $GITHUB_ENV
+          echo "KBUILD_BUILD_USER=${{ inputs.KBUILD_USER }}" >> $GITHUB_ENV
+          echo "KBUILD_BUILD_HOST=GitHubActions" >> $GITHUB_ENV
+          echo "PATH=$PWD/toolchain/clang/clang-r*/bin:$PATH" >> $GITHUB_ENV
+
+      # =========================
+      # APPLY KSU NEXT
+      # =========================
+      - name: Apply KernelSU-Next
+        run: |
+          echo "[+] Installing KernelSU-Next..."
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+
+      # =========================
+      # DEFCONFIG
+      # =========================
+      - name: Make Defconfig
+        run: |
+          make O=out ARCH=arm64 ${{ inputs.KERNEL_DEFCONFIG }}
+
+      # =========================
+      # BUILD
+      # =========================
+      - name: Build Kernel
+        run: |
+          make -j$(nproc --all) O=out ARCH=arm64 \
+          CC=clang \
+          LD=ld.lld \
+          AR=llvm-ar \
+          NM=llvm-nm \
+          OBJCOPY=llvm-objcopy \
+          OBJDUMP=llvm-objdump \
+          STRIP=llvm-strip
+
+      # =========================
+      # PREP OUTPUT
+      # =========================
+      - name: Prepare Output
+        run: |
+          mkdir -p release
+
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp out/arch/arm64/boot/Image.gz-dtb release/Image
+          elif [ -f out/arch/arm64/boot/Image.gz ]; then
+            cp out/arch/arm64/boot/Image.gz release/Image
+          else
+            cp out/arch/arm64/boot/Image release/Image
+          fi
+
+      # =========================
+      # ZIP PACKAGE
+      # =========================
+      - name: Package Kernel
+        id: pack
+        run: |
+          DATE=$(date +%Y%m%d)
+
+          ZIP="${{ inputs.KERNEL_NAME }}-${{ inputs.KERNEL_VERSION }}-${{ inputs.DEVICE_CODENAME }}-ksu_next-${DATE}.zip"
+
+          cd release
+          zip -r9 "../$ZIP" .
+
+          echo "zip=$ZIP" >> $GITHUB_OUTPUT
+
+      # =========================
+      # TAG
+      # =========================
+      - name: Create Tag
+        id: tag
+        run: |
+          TAG="${{ inputs.KERNEL_NAME }}-${{ inputs.KERNEL_VERSION }}-${{ inputs.DEVICE_CODENAME }}-ksu_next-$(date +%Y%m%d)"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      # =========================
+      # GITHUB RELEASE
+      # =========================
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "${{ inputs.KERNEL_NAME }} ${{ inputs.KERNEL_VERSION }} (KernelSU-Next)"
+          files: ${{ steps.pack.outputs.zip }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # =========================
+      # SUMMARY
+      # =========================
+      - name: Build Summary
+        run: |
+          echo "=============================="
+          echo "BUILD SUCCESS"
+          echo "Variant: KernelSU-Next"
+          echo "ZIP: ${{ steps.pack.outputs.zip }}"
+          echo "TAG: ${{ steps.tag.outputs.tag }}"
+          echo "=============================="
