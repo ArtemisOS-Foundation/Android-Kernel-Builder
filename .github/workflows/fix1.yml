@@ -1,0 +1,223 @@
+name: Kernel Build PRO FIXED
+
+on:
+  workflow_dispatch:
+    inputs:
+      KERNEL_SOURCE:
+        required: true
+        type: string
+      KERNEL_BRANCH:
+        required: true
+        type: string
+      KERNEL_DEFCONFIG:
+        required: true
+        type: string
+      DEVICE_CODENAME:
+        required: true
+        type: string
+      KERNEL_VERSION:
+        required: true
+        type: string
+      KERNEL_NAME:
+        required: true
+        type: string
+      KBUILD_USER:
+        required: true
+        type: string
+      USE_ANYKERNEL:
+        required: true
+        type: string
+        default: "true"
+      USE_KSU_NEXT:
+        required: true
+        type: string
+        default: "false"
+      ANYKERNEL_SOURCE:
+        required: false
+        type: string
+      ANYKERNEL_BRANCH:
+        required: false
+        type: string
+        default: "master"
+
+env:
+  TZ: Asia/Jakarta
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+
+    # =========================
+    # PARSE REPO
+    # =========================
+    - name: Parse Kernel Source
+      id: parse
+      run: |
+        REPO=$(echo "${{ inputs.KERNEL_SOURCE }}" | sed 's|https://github.com/||' | sed 's|http://github.com/||' | sed 's|github.com/||' | sed 's|\.git$||')
+        echo "repo=$REPO" >> $GITHUB_OUTPUT
+
+    # =========================
+    # CHECKOUT
+    # =========================
+    - name: Checkout Kernel
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ steps.parse.outputs.repo }}
+        ref: ${{ inputs.KERNEL_BRANCH }}
+        submodules: recursive
+
+    # =========================
+    # DEPENDENCIES
+    # =========================
+    - name: Install deps
+      run: |
+        sudo apt update
+        sudo apt install -y bc bison build-essential ccache curl flex git zip unzip \
+        libssl-dev libelf-dev python3 clang lld llvm gcc-multilib
+
+    # =========================
+    # TOOLCHAIN FIX (IMPORTANT)
+    # =========================
+    - name: Setup Toolchain FIXED
+      run: |
+        mkdir -p toolchain
+
+        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 toolchain/clang
+        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 toolchain/gcc32
+
+        CLANG_DIR=$(find toolchain/clang -maxdepth 1 -type d -name "clang-r*" | head -n 1)
+
+        echo "CLANG_DIR=$CLANG_DIR"
+
+        echo "ARCH=arm64" >> $GITHUB_ENV
+        echo "SUBARCH=arm64" >> $GITHUB_ENV
+
+        echo "KBUILD_BUILD_USER=${{ inputs.KBUILD_USER }}" >> $GITHUB_ENV
+        echo "KBUILD_BUILD_HOST=GitHubCI" >> $GITHUB_ENV
+
+        echo "PATH=$CLANG_DIR/bin:$PATH" >> $GITHUB_ENV
+
+        # CRITICAL FIXES
+        echo "LD=ld.lld" >> $GITHUB_ENV
+        echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> $GITHUB_ENV
+        echo "CC=clang" >> $GITHUB_ENV
+
+    # =========================
+    # KSU-NEXT (OPTIONAL)
+    # =========================
+    - name: Apply KernelSU-Next
+      if: inputs.USE_KSU_NEXT == 'true'
+      run: |
+        curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+
+    # =========================
+    # DEFCONFIG
+    # =========================
+    - name: Defconfig
+      run: |
+        make O=out ARCH=arm64 ${{ inputs.KERNEL_DEFCONFIG }}
+
+    # =========================
+    # BUILD KERNEL (FIXED)
+    # =========================
+    - name: Build Kernel
+      run: |
+        clang --version
+
+        make -j$(nproc) O=out ARCH=arm64 \
+        CC=clang \
+        LD=ld.lld \
+        AR=llvm-ar \
+        NM=llvm-nm \
+        OBJCOPY=llvm-objcopy \
+        OBJDUMP=llvm-objdump \
+        STRIP=llvm-strip \
+        CROSS_COMPILE_ARM32=arm-linux-androideabi-
+
+    # =========================
+    # PREP IMAGE (XIAOMI SAFE)
+    # =========================
+    - name: Prepare Image
+      run: |
+        mkdir -p anykernel
+
+        if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+          cp out/arch/arm64/boot/Image.gz-dtb anykernel/Image.gz-dtb
+
+        elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
+          cp out/arch/arm64/boot/Image.gz anykernel/Image.gz-dtb
+
+        else
+          cp out/arch/arm64/boot/Image anykernel/Image.gz-dtb
+        fi
+
+    # =========================
+    # ANYKERNEL
+    # =========================
+    - name: Clone AnyKernel
+      if: inputs.USE_ANYKERNEL == 'true'
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.ANYKERNEL_SOURCE }}
+        ref: ${{ inputs.ANYKERNEL_BRANCH }}
+        path: anykernel_src
+
+    - name: Setup AnyKernel
+      if: inputs.USE_ANYKERNEL == 'true'
+      run: |
+        cp anykernel/Image.gz-dtb anykernel_src/
+
+    # =========================
+    # ZIP FIX (NO ZIP-IN-ZIP BUG)
+    # =========================
+    - name: Build ZIP
+      run: |
+        DATE=$(date +%Y%m%d)
+        ZIP="${{ inputs.KERNEL_NAME }}-${{ inputs.KERNEL_VERSION }}-${{ inputs.DEVICE_CODENAME }}-${DATE}.zip"
+
+        if [ "${{ inputs.USE_ANYKERNEL }}" = "true" ]; then
+          cd anykernel_src
+          zip -r9 "../$ZIP" . -x "*.git*" "README*" "LICENSE*"
+        else
+          cd anykernel
+          zip -r9 "../$ZIP" Image.gz-dtb
+        fi
+
+        mv "../$ZIP" ../artifact.zip
+        echo "ZIP_NAME=$ZIP" >> $GITHUB_ENV
+
+    # =========================
+    # ARTIFACT
+    # =========================
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-build
+        path: artifact.zip
+
+    # =========================
+    # GITHUB RELEASE (FINAL FIX)
+    # =========================
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ inputs.KERNEL_NAME }}-${{ inputs.KERNEL_VERSION }}-${{ github.run_number }}
+        name: "${{ inputs.KERNEL_NAME }} ${{ inputs.KERNEL_VERSION }}"
+        files: artifact.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # =========================
+    # SUMMARY
+    # =========================
+    - name: Summary
+      run: |
+        echo "========================="
+        echo "BUILD SUCCESS FIXED"
+        echo "DEVICE: ${{ inputs.DEVICE_CODENAME }}"
+        echo "KSU-NEXT: ${{ inputs.USE_KSU_NEXT }}"
+        echo "OUTPUT: GH RELEASE READY"
+        echo "========================="
