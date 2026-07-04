@@ -1,4 +1,4 @@
-name: Kernel Build + KSU-Next
+name: Kernel Build + KSU-Next (RELEASE MODE)
 
 on:
   workflow_dispatch:
@@ -6,45 +6,35 @@ on:
       KERNEL_SOURCE:
         required: true
         type: string
-
       KERNEL_BRANCH:
         required: true
         type: string
-
       KERNEL_DEFCONFIG:
         required: true
         type: string
-
       DEVICE_CODENAME:
         required: true
         type: string
-
       KERNEL_VERSION:
         required: true
         type: string
-
       KERNEL_NAME:
         required: true
         type: string
-
       KBUILD_USER:
         required: true
         type: string
-
       USE_ANYKERNEL:
         required: true
         type: string
         default: "true"
-
       USE_KSU_NEXT:
         required: true
         type: string
         default: "false"
-
       ANYKERNEL_SOURCE:
         required: false
         type: string
-
       ANYKERNEL_BRANCH:
         required: false
         type: string
@@ -80,33 +70,43 @@ jobs:
         submodules: recursive
 
     # =========================
-    # DEPENDENCIES
+    # DEPENDENCIES (FIXED)
     # =========================
     - name: Install deps
       run: |
         sudo apt update
         sudo apt install -y bc bison build-essential ccache curl flex \
-        git zip unzip libssl-dev libelf-dev python3
+        git zip unzip libssl-dev libelf-dev python3 clang lld llvm gcc-multilib
 
     # =========================
-    # TOOLCHAIN
+    # TOOLCHAIN FIX (NO ld.lld ERROR)
     # =========================
-    - name: Toolchain
+    - name: Toolchain Setup
       run: |
-        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 toolchain
+        mkdir -p toolchain
+
+        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 toolchain/clang
+        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 toolchain/gcc32
 
         echo "ARCH=arm64" >> $GITHUB_ENV
         echo "SUBARCH=arm64" >> $GITHUB_ENV
+
         echo "KBUILD_BUILD_USER=${{ inputs.KBUILD_USER }}" >> $GITHUB_ENV
         echo "KBUILD_BUILD_HOST=GitHubCI" >> $GITHUB_ENV
 
+        echo "PATH=$PWD/toolchain/clang/bin:$PATH" >> $GITHUB_ENV
+
+        # FIX IMPORTANT
+        echo "LD=ld.lld" >> $GITHUB_ENV
+        echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> $GITHUB_ENV
+
     # =========================
-    # KSU-NEXT PATCH (NEW)
+    # KSU-NEXT PATCH
     # =========================
-    - name: Apply KernelSU-Next (optional)
+    - name: Apply KernelSU-Next
       if: inputs.USE_KSU_NEXT == 'true'
       run: |
-        echo "[+] Applying KernelSU-Next patch..."
+        echo "[+] Installing KernelSU-Next..."
         curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
     # =========================
@@ -117,18 +117,24 @@ jobs:
         make O=out ARCH=arm64 ${{ inputs.KERNEL_DEFCONFIG }}
 
     # =========================
-    # BUILD
+    # BUILD KERNEL
     # =========================
     - name: Build Kernel
       run: |
         make -j$(nproc) O=out ARCH=arm64 \
-        CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
-        OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip
+        CC=clang \
+        LD=ld.lld \
+        AR=llvm-ar \
+        NM=llvm-nm \
+        OBJCOPY=llvm-objcopy \
+        OBJDUMP=llvm-objdump \
+        STRIP=llvm-strip \
+        CROSS_COMPILE_ARM32=arm-linux-androideabi-
 
     # =========================
-    # PREP ANYKERNEL ROOT
+    # PREP IMAGE (XIAOMI SAFE)
     # =========================
-    - name: Prepare Image (Xiaomi SAFE)
+    - name: Prepare Image
       run: |
         mkdir -p anykernel
 
@@ -143,7 +149,7 @@ jobs:
         fi
 
     # =========================
-    # ANYKERNEL CHECKOUT
+    # ANYKERNEL
     # =========================
     - name: Clone AnyKernel
       if: inputs.USE_ANYKERNEL == 'true'
@@ -153,55 +159,51 @@ jobs:
         ref: ${{ inputs.ANYKERNEL_BRANCH }}
         path: anykernel_src
 
-    # =========================
-    # MERGE IMAGE
-    # =========================
     - name: Setup AnyKernel
       if: inputs.USE_ANYKERNEL == 'true'
       run: |
         cp anykernel/Image.gz-dtb anykernel_src/
 
     # =========================
-    # PACKAGE (FIXED NO ZIP BUG)
+    # BUILD ZIP
     # =========================
     - name: Build ZIP
-      if: inputs.USE_ANYKERNEL == 'true'
-      run: |
-        cd anykernel_src
-
-        DATE=$(date +%Y%m%d)
-        ZIP="${{ inputs.KERNEL_NAME }}-${{ inputs.KERNEL_VERSION }}-${{ inputs.DEVICE_CODENAME }}-${DATE}.zip"
-
-        zip -r9 "../$ZIP" . -x "*.git*" "README*" "LICENSE*"
-
-        mv "../$ZIP" ../artifact.zip
-
-        echo "ZIP_NAME=$ZIP" >> $GITHUB_ENV
-
-    # =========================
-    # RAW MODE
-    # =========================
-    - name: Raw ZIP
-      if: inputs.USE_ANYKERNEL != 'true'
       run: |
         DATE=$(date +%Y%m%d)
         ZIP="${{ inputs.KERNEL_NAME }}-${{ inputs.KERNEL_VERSION }}-${{ inputs.DEVICE_CODENAME }}-${DATE}.zip"
 
-        cd anykernel
-        zip -r9 "../$ZIP" Image.gz-dtb
-
-        mv "../$ZIP" ../artifact.zip
+        if [ "${{ inputs.USE_ANYKERNEL }}" = "true" ]; then
+          cd anykernel_src
+          zip -r9 "../$ZIP" . -x "*.git*" "README*" "LICENSE*"
+          mv "../$ZIP" ../artifact.zip
+        else
+          cd anykernel
+          zip -r9 "../$ZIP" Image.gz-dtb
+          mv "../$ZIP" ../artifact.zip
+        fi
 
         echo "ZIP_NAME=$ZIP" >> $GITHUB_ENV
 
     # =========================
-    # UPLOAD
+    # UPLOAD ARTIFACT
     # =========================
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-ci-v2
+        name: kernel-ci
         path: artifact.zip
+
+    # =========================
+    # 🚀 GITHUB RELEASE (FIXED)
+    # =========================
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ inputs.KERNEL_NAME }}-${{ inputs.KERNEL_VERSION }}-${{ github.run_number }}
+        name: "${{ inputs.KERNEL_NAME }} ${{ inputs.KERNEL_VERSION }}"
+        files: artifact.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     # =========================
     # SUMMARY
@@ -209,8 +211,7 @@ jobs:
     - name: Summary
       run: |
         echo "=========================="
-        echo "KERNEL CI V2 DONE"
+        echo "BUILD + KSU-NEXT DONE"
         echo "DEVICE: ${{ inputs.DEVICE_CODENAME }}"
-        echo "KSU-NEXT: ${{ inputs.USE_KSU_NEXT }}"
-        echo "OUTPUT: artifact.zip"
+        echo "RELEASE: CREATED"
         echo "=========================="
