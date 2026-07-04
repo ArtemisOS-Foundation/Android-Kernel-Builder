@@ -1,4 +1,4 @@
-name: Build Android Kernel vDSO Compat
+name: Build Android Kernel with vDSO compatibilty
 
 on:
   workflow_dispatch:
@@ -55,10 +55,19 @@ jobs:
     timeout-minutes: 120
 
     steps:
+      - name: Parse Kernel Source URL
+        id: parse_kernel
+        run: |
+          KERNEL_URL="${{ github.event.inputs.KERNEL_SOURCE }}"
+          # Extract owner/repo from full URL
+          KERNEL_REPO=$(echo "$KERNEL_URL" | sed 's|https://github.com/||' | sed 's|http://github.com/||' | sed 's|github.com/||' | sed 's|\.git$||')
+          echo "kernel_repo=$KERNEL_REPO" >> $GITHUB_OUTPUT
+          echo "Parsed kernel repo: $KERNEL_REPO"
+
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.inputs.KERNEL_SOURCE }}
+          repository: ${{ steps.parse_kernel.outputs.kernel_repo }}
           ref: ${{ github.event.inputs.KERNEL_BRANCH }}
           submodules: recursive
           fetch-depth: 1
@@ -121,16 +130,27 @@ jobs:
             exit 1
           fi
 
+      - name: Parse AnyKernel Source URL
+        if: github.event.inputs.USE_ANYKERNEL == 'true'
+        id: parse_anykernel
+        run: |
+          AK_URL="${{ github.event.inputs.ANYKERNEL_SOURCE }}"
+          AK_REPO=$(echo "$AK_URL" | sed 's|https://github.com/||' | sed 's|http://github.com/||' | sed 's|github.com/||' | sed 's|\.git$||')
+          echo "ak_repo=$AK_REPO" >> $GITHUB_OUTPUT
+          echo "Parsed AnyKernel repo: $AK_REPO"
+
       - name: Clone AnyKernel3 (if enabled)
         if: github.event.inputs.USE_ANYKERNEL == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.parse_anykernel.outputs.ak_repo }}
+          ref: ${{ github.event.inputs.ANYKERNEL_BRANCH }}
+          path: anykernel
+          fetch-depth: 1
+
+      - name: Setup AnyKernel3 Package
+        if: github.event.inputs.USE_ANYKERNEL == 'true'
         run: |
-          if [ -z "${{ github.event.inputs.ANYKERNEL_SOURCE }}" ]; then
-            echo "ERROR: ANYKERNEL_SOURCE is required when USE_ANYKERNEL=true"
-            exit 1
-          fi
-
-          git clone --depth=1 -b ${{ github.event.inputs.ANYKERNEL_BRANCH }} ${{ github.event.inputs.ANYKERNEL_SOURCE }} $GITHUB_WORKSPACE/anykernel
-
           # Copy kernel image to AnyKernel3
           cp $GITHUB_WORKSPACE/artifacts/kernel $GITHUB_WORKSPACE/anykernel/
 
