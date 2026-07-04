@@ -1,0 +1,211 @@
+name: Kernel Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      KERNEL_SOURCE:
+        required: true
+        type: string
+
+      KERNEL_BRANCH:
+        required: true
+        type: string
+
+      KERNEL_DEFCONFIG:
+        required: true
+        type: string
+
+      DEVICE_CODENAME:
+        required: true
+        type: string
+
+      KERNEL_VERSION:
+        required: true
+        type: string
+
+      KERNEL_NAME:
+        required: true
+        type: string
+
+      KBUILD_USER:
+        required: true
+        type: string
+
+      USE_ANYKERNEL:
+        required: true
+        type: string
+        default: "true"
+
+      ANYKERNEL_SOURCE:
+        required: false
+        type: string
+
+      ANYKERNEL_BRANCH:
+        required: false
+        type: string
+        default: "master"
+
+env:
+  TZ: Asia/Jakarta
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+
+    # =========================
+    # PARSE REPO
+    # =========================
+    - name: Parse Kernel Repo
+      id: parse
+      run: |
+        REPO=$(echo "${{ inputs.KERNEL_SOURCE }}" | sed 's|https://github.com/||' | sed 's|http://github.com/||' | sed 's|github.com/||' | sed 's|\.git$||')
+        echo "repo=$REPO" >> $GITHUB_OUTPUT
+
+    # =========================
+    # CHECKOUT KERNEL
+    # =========================
+    - name: Checkout Kernel
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ steps.parse.outputs.repo }}
+        ref: ${{ inputs.KERNEL_BRANCH }}
+        submodules: recursive
+
+    # =========================
+    # DEPENDENCIES
+    # =========================
+    - name: Install Dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y bc bison build-essential ccache curl flex \
+        git zip unzip libssl-dev libelf-dev python3
+
+    # =========================
+    # TOOLCHAIN
+    # =========================
+    - name: Setup Toolchain
+      run: |
+        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 toolchain
+
+        echo "ARCH=arm64" >> $GITHUB_ENV
+        echo "SUBARCH=arm64" >> $GITHUB_ENV
+        echo "KBUILD_BUILD_USER=${{ inputs.KBUILD_USER }}" >> $GITHUB_ENV
+        echo "KBUILD_BUILD_HOST=GitHubCI" >> $GITHUB_ENV
+        echo "PATH=$PWD/toolchain/clang-r*/bin:$PATH" >> $GITHUB_ENV
+
+    # =========================
+    # DEFCONFIG
+    # =========================
+    - name: Defconfig
+      run: |
+        make O=out ARCH=arm64 ${{ inputs.KERNEL_DEFCONFIG }}
+
+    # =========================
+    # BUILD
+    # =========================
+    - name: Build Kernel
+      run: |
+        make -j$(nproc) O=out ARCH=arm64 \
+        CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+        OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip
+
+    # =========================
+    # PREP ANYKERNEL ROOT (FIXED)
+    # =========================
+    - name: Prepare Image (Xiaomi SAFE)
+      run: |
+        mkdir -p anykernel
+
+        if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+          echo "[+] Image.gz-dtb"
+          cp out/arch/arm64/boot/Image.gz-dtb anykernel/Image.gz-dtb
+
+        elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
+          echo "[!] fallback gz"
+          cp out/arch/arm64/boot/Image.gz anykernel/Image.gz-dtb
+
+        else
+          echo "[!] fallback raw Image"
+          cp out/arch/arm64/boot/Image anykernel/Image.gz-dtb
+        fi
+
+    # =========================
+    # ANYKERNEL CHECKOUT
+    # =========================
+    - name: Clone AnyKernel
+      if: inputs.USE_ANYKERNEL == 'true'
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.ANYKERNEL_SOURCE }}
+        ref: ${{ inputs.ANYKERNEL_BRANCH }}
+        path: anykernel_src
+
+    # =========================
+    # MERGE IMAGE INTO ANYKERNEL
+    # =========================
+    - name: Setup AnyKernel
+      if: inputs.USE_ANYKERNEL == 'true'
+      run: |
+        cp anykernel/Image.gz-dtb anykernel_src/
+
+    # =========================
+    # BUILD ZIP (ANTI ZIP BUG FIXED)
+    # =========================
+    - name: Build Flashable ZIP
+      if: inputs.USE_ANYKERNEL == 'true'
+      run: |
+        cd anykernel_src
+
+        sed -i "s/device.name1=.*/device.name1=${{ inputs.DEVICE_CODENAME }}/g" anykernel.sh 2>/dev/null || true
+        sed -i "s/kernel.string=.*/kernel.string=${{ inputs.KERNEL_NAME }} ${{ inputs.KERNEL_VERSION }}/g" anykernel.sh 2>/dev/null || true
+
+        DATE=$(date +%Y%m%d)
+        ZIP="${{ inputs.KERNEL_NAME }}-${{ inputs.KERNEL_VERSION }}-${{ inputs.DEVICE_CODENAME }}-${DATE}.zip"
+
+        zip -r9 "../$ZIP" . -x "*.git*" "README*" "LICENSE*"
+
+        mv "../$ZIP" ../artifact.zip
+
+        echo "ZIP_NAME=$ZIP" >> $GITHUB_ENV
+
+    # =========================
+    # RAW MODE
+    # =========================
+    - name: Raw ZIP
+      if: inputs.USE_ANYKERNEL != 'true'
+      run: |
+        mkdir -p artifacts
+
+        DATE=$(date +%Y%m%d)
+        ZIP="${{ inputs.KERNEL_NAME }}-${{ inputs.KERNEL_VERSION }}-${{ inputs.DEVICE_CODENAME }}-${DATE}.zip"
+
+        cd anykernel
+        zip -r9 "../$ZIP" Image.gz-dtb
+
+        mv "../$ZIP" ../artifact.zip
+
+        echo "ZIP_NAME=$ZIP" >> $GITHUB_ENV
+
+    # =========================
+    # UPLOAD ARTIFACT
+    # =========================
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-build
+        path: artifact.zip
+
+    # =========================
+    # SUMMARY
+    # =========================
+    - name: Summary
+      run: |
+        echo "================================"
+        echo "BUILD DONE"
+        echo "DEVICE: ${{ inputs.DEVICE_CODENAME }}"
+        echo "KERNEL: ${{ inputs.KERNEL_NAME }}"
+        echo "OUTPUT: artifact.zip"
+        echo "================================"
